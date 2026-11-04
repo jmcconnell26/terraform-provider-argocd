@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"strings"
 
-	clusterClient "github.com/argoproj/argo-cd/v2/pkg/apiclient/cluster"
+	clusterClient "github.com/argoproj/argo-cd/v3/pkg/apiclient/cluster"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
 func resourceArgoCDCluster() *schema.Resource {
 	return &schema.Resource{
+		Description:   "Manages [clusters](https://argo-cd.readthedocs.io/en/stable/operator-manual/declarative-setup/#clusters) within ArgoCD.",
 		CreateContext: resourceArgoCDClusterCreate,
 		ReadContext:   resourceArgoCDClusterRead,
 		UpdateContext: resourceArgoCDClusterUpdate,
@@ -24,96 +25,42 @@ func resourceArgoCDCluster() *schema.Resource {
 }
 
 func resourceArgoCDClusterCreate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	server := meta.(*ServerInterface)
-	if err := server.initClients(); err != nil {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Failed to init clients"),
-				Detail:   err.Error(),
-			},
-		}
+	si := meta.(*ServerInterface)
+	if diags := si.InitClients(ctx); diags != nil {
+		return pluginSDKDiags(diags)
 	}
-	client := *server.ClusterClient
+
 	cluster, err := expandCluster(d)
 	if err != nil {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary:  fmt.Sprintf("could not expand cluster attributes: %s", err),
-				Detail:   err.Error(),
-			},
-		}
-
+		return errorToDiagnostics("failed to expand cluster", err)
 	}
 
-	featureProjectScopedClustersSupported, err := server.isFeatureSupported(featureProjectScopedClusters)
-	if err != nil {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary:  "feature not supported",
-				Detail:   err.Error(),
-			},
-		}
-	}
-	if !featureProjectScopedClustersSupported && cluster.Project != "" {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary: fmt.Sprintf(
-					"cluster project is only supported from ArgoCD %s onwards",
-					featureVersionConstraintsMap[featureProjectScopedClusters].String()),
-				Detail: "See https://argo-cd.readthedocs.io/en/stable/user-guide/projects/#project-scoped-repositories-and-clusters",
-			},
-		}
-	}
-
-	featureClusterMetadataSupported, err := server.isFeatureSupported(featureClusterMetadata)
-	if err != nil {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary:  "feature not supported",
-				Detail:   err.Error(),
-			},
-		}
-	}
-
-	if !featureClusterMetadataSupported && (len(cluster.Annotations) != 0 || len(cluster.Labels) != 0) {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary: fmt.Sprintf(
-					"cluster metadata is only supported from ArgoCD %s onwards",
-					featureVersionConstraintsMap[featureClusterMetadata].String()),
-			},
-		}
-	}
-
-	// Cluster are unique by "server address" so we should check there is no existing cluster with this address before
-	tokenMutexClusters.RLock()
-	existingClusters, err := client.List(ctx, &clusterClient.ClusterQuery{
-		Id: &clusterClient.ClusterID{
-			Type:  "server",
-			Value: cluster.Server, // TODO: not used by backend, upstream bug ?
-		},
-	})
-	tokenMutexClusters.RUnlock()
-	if err != nil {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary:  fmt.Sprintf("could not get current clusters list:  %s", err),
-				Detail:   err.Error(),
-			},
-		}
-	}
+	// Need a full lock here to avoid race conditions between List existing clusters and creating a new one
+	tokenMutexClusters.Lock()
 
 	rtrimmedServer := strings.TrimRight(cluster.Server, "/")
-	if err == nil && len(existingClusters.Items) > 0 {
+
+	// Cluster are unique by "server address" so we should check there is no existing cluster with this address before
+	existingClusters, err := si.ClusterClient.List(ctx, &clusterClient.ClusterQuery{
+		// Starting argo-cd server v2.8.0 filtering on list api endpoint is fixed, else it is ignored, see:
+		// - https://github.com/oboukili/terraform-provider-argocd/issues/266#issuecomment-1739122022
+		// - https://github.com/argoproj/argo-cd/pull/13363
+		Id: &clusterClient.ClusterID{
+			Type:  "server",
+			Value: rtrimmedServer,
+		},
+	})
+	if err != nil {
+		tokenMutexClusters.Unlock()
+		return errorToDiagnostics(fmt.Sprintf("failed to list existing clusters when creating cluster %s", cluster.Server), err)
+	}
+
+	// Here we will filter ourselves on the list so that we are backward compatible for argo-cd server with version < v2.8.0 (see coment above)
+	if len(existingClusters.Items) > 0 {
 		for _, existingCluster := range existingClusters.Items {
 			if rtrimmedServer == strings.TrimRight(existingCluster.Server, "/") {
+				tokenMutexClusters.Unlock()
+
 				return []diag.Diagnostic{
 					{
 						Severity: diag.Error,
@@ -124,19 +71,13 @@ func resourceArgoCDClusterCreate(ctx context.Context, d *schema.ResourceData, me
 		}
 	}
 
-	tokenMutexClusters.Lock()
-	c, err := client.Create(ctx, &clusterClient.ClusterCreateRequest{
-		Cluster: cluster, Upsert: true})
+	c, err := si.ClusterClient.Create(ctx, &clusterClient.ClusterCreateRequest{
+		Cluster: cluster, Upsert: false,
+	})
 	tokenMutexClusters.Unlock()
 
 	if err != nil {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary:  fmt.Sprintf("something went wrong during cluster resource creation: %s", err),
-				Detail:   err.Error(),
-			},
-		}
+		return argoCDAPIError("create", "cluster", cluster.Server, err)
 	}
 
 	// Check if the name has been defaulted to server (when omitted)
@@ -145,183 +86,142 @@ func resourceArgoCDClusterCreate(ctx context.Context, d *schema.ResourceData, me
 	} else {
 		d.SetId(c.Server)
 	}
+
 	return resourceArgoCDClusterRead(ctx, d, meta)
 }
 
 func resourceArgoCDClusterRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	server := meta.(*ServerInterface)
-	if err := server.initClients(); err != nil {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Failed to init clients"),
-				Detail:   err.Error(),
-			},
-		}
+	si := meta.(*ServerInterface)
+	if diags := si.InitClients(ctx); diags != nil {
+		return pluginSDKDiags(diags)
 	}
-	client := *server.ClusterClient
 
 	tokenMutexClusters.RLock()
-	c, err := client.Get(ctx, getClusterQueryFromID(d))
+	c, err := si.ClusterClient.Get(ctx, getClusterQueryFromID(d))
 	tokenMutexClusters.RUnlock()
 
 	if err != nil {
 		if strings.Contains(err.Error(), "NotFound") {
 			d.SetId("")
 			return nil
-		} else {
-			return []diag.Diagnostic{
-				{
-					Severity: diag.Error,
-					Summary:  fmt.Sprintf("could not get cluster information: %s", err),
-					Detail:   err.Error(),
-				},
+		}
+
+		// Fix for https://github.com/oboukili/terraform-provider-argocd/issues/266
+		// This fix is added here as a workaround to ensure backward compatibility, as
+		//   it is triggered only on the specific usecase where the issue happens.
+		// Additional remarks about this code:
+		// * it is a copy/paste of the code used by resourceArgoCDClusterCreate to check if
+		//     the cluster already exists (with some obvious changes to return value and mutex type)
+		// * it should at term replace the `si.ClusterClient.Get` code for this method
+		if strings.Contains(err.Error(), "PermissionDenied") {
+			cluster, err := expandCluster(d)
+			if err != nil {
+				return errorToDiagnostics("failed to expand cluster", err)
 			}
+
+			tokenMutexClusters.RLock()
+
+			rtrimmedServer := strings.TrimRight(cluster.Server, "/")
+
+			// Cluster are unique by "server address" so we should check there is no existing cluster with this address before
+			existingClusters, err := si.ClusterClient.List(ctx, &clusterClient.ClusterQuery{
+				// Starting argo-cd server v2.8.0 filtering on list api endpoint is fixed, else it is ignored, see:
+				// - https://github.com/oboukili/terraform-provider-argocd/issues/266#issuecomment-1739122022
+				// - https://github.com/argoproj/argo-cd/pull/13363
+				Id: &clusterClient.ClusterID{
+					Type:  "server",
+					Value: rtrimmedServer,
+				},
+			})
+
+			tokenMutexClusters.RUnlock()
+
+			if err != nil {
+				return errorToDiagnostics(fmt.Sprintf("failed to list existing clusters when reading cluster %s", cluster.Server), err)
+			}
+
+			// Here we will filter ourselves on the list so that we are backward compatible for argo-cd server with version < v2.8.0 (see coment above)
+			if len(existingClusters.Items) > 0 {
+				for _, existingCluster := range existingClusters.Items {
+					if rtrimmedServer == strings.TrimRight(existingCluster.Server, "/") {
+						// Cluster was found, return
+						return nil
+					}
+				}
+			}
+
+			// Cluster was not found, return with empty Id
+			d.SetId("")
+
+			return nil
+		} else {
+			return argoCDAPIError("read", "cluster", d.Id(), err)
 		}
 	}
-	err = flattenCluster(c, d)
-	if err != nil {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary:  "could not flatten cluster",
-				Detail:   err.Error(),
-			},
-		}
+
+	if err = flattenCluster(c, d); err != nil {
+		return errorToDiagnostics(fmt.Sprintf("failed to flatten cluster %s", d.Id()), err)
 	}
+
 	return nil
 }
 
 func resourceArgoCDClusterUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	server := meta.(*ServerInterface)
-	if err := server.initClients(); err != nil {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Failed to init clients"),
-				Detail:   err.Error(),
-			},
-		}
+	si := meta.(*ServerInterface)
+	if diags := si.InitClients(ctx); diags != nil {
+		return pluginSDKDiags(diags)
 	}
-	client := *server.ClusterClient
+
 	cluster, err := expandCluster(d)
 	if err != nil {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary:  fmt.Sprintf("could not expand cluster attributes: %s", err),
-				Detail:   err.Error(),
-			},
-		}
-	}
-
-	featureProjectScopedClustersSupported, err := server.isFeatureSupported(featureProjectScopedClusters)
-	if err != nil {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary:  "feature not supported",
-				Detail:   err.Error(),
-			},
-		}
-	}
-	if !featureProjectScopedClustersSupported && cluster.Project != "" {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary: fmt.Sprintf(
-					"cluster project is only supported from ArgoCD %s onwards",
-					featureVersionConstraintsMap[featureProjectScopedClusters].String()),
-				Detail: "See https://argo-cd.readthedocs.io/en/stable/user-guide/projects/#project-scoped-repositories-and-clusters",
-			},
-		}
-	}
-
-	featureClusterMetadataSupported, err := server.isFeatureSupported(featureClusterMetadata)
-	if err != nil {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary:  "feature not supported",
-				Detail:   err.Error(),
-			},
-		}
-	}
-
-	if !featureClusterMetadataSupported && (len(cluster.Annotations) != 0 || len(cluster.Labels) != 0) {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary: fmt.Sprintf(
-					"cluster metadata is only supported from ArgoCD %s onwards",
-					featureVersionConstraintsMap[featureClusterMetadata].String()),
-			},
-		}
+		return errorToDiagnostics(fmt.Sprintf("failed to expand cluster %s", d.Id()), err)
 	}
 
 	tokenMutexClusters.Lock()
-	_, err = client.Update(ctx, &clusterClient.ClusterUpdateRequest{Cluster: cluster})
+	_, err = si.ClusterClient.Update(ctx, &clusterClient.ClusterUpdateRequest{Cluster: cluster})
 	tokenMutexClusters.Unlock()
 
 	if err != nil {
-		if strings.Contains(err.Error(), "NotFound") {
-			d.SetId("")
-			return nil
-		} else {
-			return []diag.Diagnostic{
-				{
-					Severity: diag.Error,
-					Summary:  fmt.Sprintf("something went wrong during cluster update: %s", err),
-					Detail:   err.Error(),
-				},
-			}
-		}
+		return argoCDAPIError("update", "cluster", cluster.Server, err)
 	}
+
 	return resourceArgoCDClusterRead(ctx, d, meta)
 }
 
 func resourceArgoCDClusterDelete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	server := meta.(*ServerInterface)
-	if err := server.initClients(); err != nil {
-		return []diag.Diagnostic{
-			{
-				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Failed to init clients"),
-				Detail:   err.Error(),
-			},
-		}
+	si := meta.(*ServerInterface)
+	if diags := si.InitClients(ctx); diags != nil {
+		return pluginSDKDiags(diags)
 	}
-	client := *server.ClusterClient
+
 	tokenMutexClusters.Lock()
-	_, err := client.Delete(ctx, getClusterQueryFromID(d))
+	_, err := si.ClusterClient.Delete(ctx, getClusterQueryFromID(d))
 	tokenMutexClusters.Unlock()
 
 	if err != nil {
 		if strings.Contains(err.Error(), "NotFound") {
 			d.SetId("")
 			return nil
-		} else {
-			return []diag.Diagnostic{
-				{
-					Severity: diag.Error,
-					Summary:  fmt.Sprintf("something went wrong during cluster deletion: %s", err),
-					Detail:   err.Error(),
-				},
-			}
 		}
+
+		return argoCDAPIError("delete", "cluster", d.Id(), err)
 	}
+
 	d.SetId("")
+
 	return nil
 }
 
 func getClusterQueryFromID(d *schema.ResourceData) *clusterClient.ClusterQuery {
-	id := strings.Split(strings.TrimPrefix(d.Id(), "https://"), "/")
 	cq := &clusterClient.ClusterQuery{}
+
+	id := strings.Split(strings.TrimPrefix(d.Id(), "https://"), "/")
 	if len(id) > 1 {
 		cq.Name = id[len(id)-1]
 		cq.Server = fmt.Sprintf("https://%s", strings.Join(id[:len(id)-1], "/"))
 	} else {
 		cq.Server = d.Id()
 	}
+
 	return cq
 }

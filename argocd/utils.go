@@ -2,15 +2,13 @@ package argocd
 
 import (
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/argoproj/argo-cd/v2/pkg/apiclient"
-	application "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
-	"github.com/argoproj/argo-cd/v2/server/rbacpolicy"
-	"github.com/argoproj/argo-cd/v2/util/io"
+	"github.com/argoproj-labs/terraform-provider-argocd/internal/features"
+
+	fwdiag "github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
@@ -32,128 +30,162 @@ func convertStringToInt64Pointer(s string) (*int64, error) {
 	if err != nil {
 		return nil, fmt.Errorf("not a valid int64: %s", s)
 	}
+
 	return &i, nil
 }
+
 func isKeyInMap(key string, d map[string]interface{}) bool {
 	if d == nil {
 		return false
 	}
+
 	for k := range d {
 		if k == key {
 			return true
 		}
 	}
+
 	return false
+}
+
+func expandBoolMap(m map[string]interface{}) map[string]bool {
+	result := make(map[string]bool)
+
+	for k, v := range m {
+		result[k] = v.(bool)
+	}
+
+	return result
 }
 
 func expandStringMap(m map[string]interface{}) map[string]string {
 	result := make(map[string]string)
+
 	for k, v := range m {
 		result[k] = v.(string)
 	}
+
 	return result
 }
 
-func expandStringList(l []interface{}) (
-	result []string) {
+func expandStringList(l []interface{}) (result []string) {
 	for _, p := range l {
 		result = append(result, p.(string))
 	}
+
 	return
 }
 
-func isValidPolicyAction(action string) bool {
-	validActions := map[string]bool{
-		rbacpolicy.ActionGet:      true,
-		rbacpolicy.ActionCreate:   true,
-		rbacpolicy.ActionUpdate:   true,
-		rbacpolicy.ActionDelete:   true,
-		rbacpolicy.ActionSync:     true,
-		rbacpolicy.ActionOverride: true,
-		"*":                       true,
-	}
-	validActionPatterns := []*regexp.Regexp{
-		regexp.MustCompile("action/.*"),
+func sliceOfString(slice []interface{}) []string {
+	result := make([]string, len(slice))
+
+	for i, s := range slice {
+		result[i] = s.(string)
 	}
 
-	if validActions[action] {
-		return true
-	}
-	for i := range validActionPatterns {
-		if validActionPatterns[i].MatchString(action) {
-			return true
-		}
-	}
-	return false
-}
-
-func validatePolicy(project string, role string, policy string) error {
-	policyComponents := strings.Split(policy, ",")
-	if len(policyComponents) != 6 || strings.Trim(policyComponents[0], " ") != "p" {
-		return fmt.Errorf("invalid policy rule '%s': must be of the form: 'p, sub, res, act, obj, eft'", policy)
-	}
-	// subject
-	subject := strings.Trim(policyComponents[1], " ")
-	expectedSubject := fmt.Sprintf("proj:%s:%s", project, role)
-	if subject != expectedSubject {
-		return fmt.Errorf("invalid policy rule '%s': policy subject must be: '%s', not '%s'", policy, expectedSubject, subject)
-	}
-	// resource
-	// https://github.com/argoproj/argo-cd/blob/c99669e088b5f25c8ce8faff6df25797a8beb5ba/pkg/apis/application/v1alpha1/types.go#L1554
-	validResources := map[string]bool{
-		rbacpolicy.ResourceApplications: true,
-		rbacpolicy.ResourceRepositories: true,
-		rbacpolicy.ResourceClusters:     true,
-		rbacpolicy.ResourceExec:         true,
-		rbacpolicy.ResourceLogs:         true,
-	}
-	resource := strings.Trim(policyComponents[2], " ")
-	if !validResources[resource] {
-		return fmt.Errorf("invalid policy rule '%s': resource '%s' not recognised", policy, resource)
-	}
-	// action
-	action := strings.Trim(policyComponents[3], " ")
-	if !isValidPolicyAction(action) {
-		return fmt.Errorf("invalid policy rule '%s': invalid action '%s'", policy, action)
-	}
-	// object
-	object := strings.Trim(policyComponents[4], " ")
-	objectRegexp, err := regexp.Compile(fmt.Sprintf(`^%s/[*\w-.]+$`, project))
-	if err != nil || !objectRegexp.MatchString(object) {
-		return fmt.Errorf("invalid policy rule '%s': object must be of form '%s/*' or '%s/<APPNAME>', not '%s'", policy, project, project, object)
-	}
-	// effect
-	effect := strings.Trim(policyComponents[5], " ")
-	if effect != "allow" && effect != "deny" {
-		return fmt.Errorf("invalid policy rule '%s': effect must be: 'allow' or 'deny'", policy)
-	}
-	return nil
-}
-
-func isValidToken(token *application.JWTToken, expiresIn int64) error {
-	// Check token expiry
-	if expiresIn > 0 && token.ExpiresAt < time.Now().Unix() {
-		return fmt.Errorf("token has expired")
-	}
-	// Check that token login works
-	opts := apiClientConnOpts
-	opts.AuthToken = token.String()
-	opts.Insecure = true
-	c, err := apiclient.NewClient(&opts)
-	if err != nil {
-		return err
-	}
-	closer, _, err := c.NewProjectClient()
-	if err != nil {
-		return err
-	}
-	defer io.Close(closer)
-	return nil
+	return result
 }
 
 func persistToState(key string, data interface{}, d *schema.ResourceData) error {
 	if err := d.Set(key, data); err != nil {
 		return fmt.Errorf("error persisting %s: %s", key, err)
 	}
+
 	return nil
+}
+
+// parseNameNamespaceID splits a resource ID of the form '<name>:<namespace>'
+// into its two parts. Resources such as argocd_application and
+// argocd_application_set use this ID format, which is set as-is on import
+// (e.g. via a `terraform import` block), so an ID missing the namespace
+// segment must be reported as a diagnostic rather than causing an
+// out-of-range panic when indexed. The namespace segment is optional and
+// defaults to empty (e.g. 'myapp' and 'myapp:' are equivalent) since an
+// empty namespace is treated the same as an unset one by the underlying
+// ArgoCD API.
+func parseNameNamespaceID(resource, id string) (name string, namespace string, diags diag.Diagnostics) {
+	ids := strings.Split(id, ":")
+
+	invalid := func() (string, string, diag.Diagnostics) {
+		return "", "", diag.Diagnostics{
+			{
+				Severity: diag.Error,
+				Summary:  fmt.Sprintf("invalid %s id %q", resource, id),
+				Detail:   "expected an id of the form '<name>:<namespace>', e.g. 'myapp:argocd'",
+			},
+		}
+	}
+
+	switch len(ids) {
+	case 1:
+		name = ids[0]
+	case 2:
+		name, namespace = ids[0], ids[1]
+	default:
+		return invalid()
+	}
+
+	if name == "" {
+		return invalid()
+	}
+
+	return name, namespace, nil
+}
+
+func argoCDAPIError(action, resource, id string, err error) diag.Diagnostics {
+	return []diag.Diagnostic{
+		{
+			Severity: diag.Error,
+			Summary:  fmt.Sprintf("failed to %s %s %s", action, resource, id),
+			Detail:   err.Error(),
+		},
+	}
+}
+
+func errorToDiagnostics(summary string, err error) diag.Diagnostics {
+	d := diag.Diagnostic{
+		Severity: diag.Error,
+		Summary:  summary,
+	}
+
+	if err != nil {
+		d.Detail = err.Error()
+	}
+
+	return []diag.Diagnostic{d}
+}
+
+func featureNotSupported(feature features.Feature) diag.Diagnostics {
+	f := features.ConstraintsMap[feature]
+
+	return []diag.Diagnostic{
+		{
+			Severity: diag.Error,
+			Summary:  fmt.Sprintf("%s is only supported from ArgoCD %s onwards", f.Name, f.MinVersion.String()),
+		},
+	}
+}
+
+// pluginSDKDiags converts diagnostics from `terraform-plugin-framework/diag` to
+// `terraform-plugin-sdk/v2/diag`
+func pluginSDKDiags(ds fwdiag.Diagnostics) diag.Diagnostics {
+	var diags diag.Diagnostics
+
+	for _, d := range ds {
+		_diag := diag.Diagnostic{
+			Detail:  d.Detail(),
+			Summary: d.Summary(),
+		}
+
+		switch d.Severity() {
+		case fwdiag.SeverityError:
+			_diag.Severity = diag.Error
+		default:
+			_diag.Severity = diag.Warning
+		}
+
+		diags = append(diags, _diag)
+	}
+
+	return diags
 }

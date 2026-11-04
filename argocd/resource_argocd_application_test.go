@@ -6,15 +6,98 @@ import (
 	"regexp"
 	"strconv"
 	"testing"
+	"time"
 
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/terraform"
+	"github.com/argoproj-labs/terraform-provider-argocd/internal/features"
+	applicationClient "github.com/argoproj/argo-cd/v3/pkg/apiclient/application"
+	application "github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 )
 
 func TestAccArgoCDApplication(t *testing.T) {
-	commonName := acctest.RandomWithPrefix("test-acc")
-	revisionHistoryLimit := acctest.RandIntRange(0, 9)
+	name := acctest.RandomWithPrefix("test-acc")
+
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationSimple(name, "0.31.0", false),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application."+name,
+						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application."+name,
+						"spec.0.source.0.target_revision",
+						"0.31.0",
+					),
+					resource.TestCheckResourceAttrSet(
+						"argocd_application."+name,
+						"status.0.%",
+					),
+				),
+			},
+			{
+				ResourceName:            "argocd_application." + name,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version", "status", "validate", "spec.0.source.0.helm.0.parameter.0.force_string"},
+			},
+			{
+				// Update
+				Config: testAccArgoCDApplicationSimple(name, "0.32.0", false),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application."+name,
+						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application."+name,
+						"spec.0.source.0.target_revision",
+						"0.32.0",
+					),
+				),
+			},
+			{
+				// Update with wait = true
+				Config: testAccArgoCDApplicationSimple(name, "0.33.0", true),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"argocd_application."+name,
+						"wait",
+						"true",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application."+name,
+						"spec.0.source.0.target_revision",
+						"0.33.0",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application."+name,
+						"status.0.health.0.status",
+						"Healthy",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application."+name,
+						"status.0.sync.0.status",
+						"Synced",
+					),
+				),
+			},
+			{
+				ResourceName:            "argocd_application." + name,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version", "status", "validate"},
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_Helm(t *testing.T) {
 	helmValues := `
 ingress:
   enabled: true
@@ -36,48 +119,6 @@ ingress:
 		ProviderFactories: testAccProviders,
 		Steps: []resource.TestStep{
 			{
-				Config: testAccArgoCDApplicationSimple(commonName),
-				Check: resource.TestCheckResourceAttrSet(
-					"argocd_application.simple",
-					"metadata.0.uid",
-				),
-			},
-			{
-				ResourceName:            "argocd_application.simple",
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"wait", "cascade"},
-			},
-			// Check with the same name for rapid application recreation robustness
-			{
-				Config: testAccArgoCDApplicationSimple(commonName),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(
-						"argocd_application.simple",
-						"metadata.0.uid",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.simple",
-						"spec.0.source.0.target_revision",
-						"16.9.11",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.simple",
-						"spec.0.revision_history_limit",
-						"10",
-					),
-				),
-			},
-			{
-				Config:             testAccArgoCDApplicationSimpleWait(commonName),
-				ExpectNonEmptyPlan: true,
-				Check: resource.TestCheckResourceAttr(
-					"argocd_application.simple",
-					"wait",
-					"true",
-				),
-			},
-			{
 				Config: testAccArgoCDApplicationHelm(
 					acctest.RandomWithPrefix("test-acc"),
 					helmValues),
@@ -96,17 +137,58 @@ ingress:
 						"spec.0.source.0.helm.0.value_files.0",
 						"values.yaml",
 					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.helm",
+						"spec.0.source.0.helm.0.pass_credentials",
+						"true",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.helm",
+						"spec.0.source.0.helm.0.ignore_missing_value_files",
+						"true",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.helm",
+						"spec.0.source.0.helm.0.version",
+						"v3",
+					),
 				),
 			},
 			{
 				ResourceName:            "argocd_application.helm",
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version"},
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version", "status", "validate", "spec.0.source.0.helm.0.parameter.0.force_string", "spec.0.source.0.helm.0.parameter.1.force_string"},
 			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_Helm_FileParameters(t *testing.T) {
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationHelm_FileParameters(acctest.RandomWithPrefix("test-acc")),
+				// Setting up tests for this is non-trivial so it is easier to test for an expected failure (since file does not exist) than to test for success
+				ExpectError: regexp.MustCompile(`(?s)Error:\s+failed\s+parsing.*--set-file data`),
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_Kustomize(t *testing.T) {
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
 			{
 				Config: testAccArgoCDApplicationKustomize(
-					acctest.RandomWithPrefix("test-acc")),
+					acctest.RandomWithPrefix("test-acc"),
+					"examples/helloWorld",
+					true,
+				),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttrSet(
 						"argocd_application.kustomize",
@@ -128,10 +210,232 @@ ingress:
 				ResourceName:            "argocd_application.kustomize",
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version"},
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version", "status", "validate"},
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_KustomizePatches(t *testing.T) {
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckFeatureSupported(t, features.ApplicationKustomizePatches) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationKustomizePatches(
+					acctest.RandomWithPrefix("test-acc")),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.kustomize_patches",
+						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.kustomize_patches",
+						"spec.0.source.0.target_revision",
+						"release-kustomize-v3.7",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.kustomize_patches",
+						"spec.0.source.0.kustomize.0.name_suffix",
+						"-bar",
+					),
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.kustomize_patches",
+						"spec.0.source.0.kustomize.0.patches.0.patch",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.kustomize_patches",
+						"spec.0.source.0.kustomize.0.patches.0.target.0.group",
+						"apps",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.kustomize_patches",
+						"spec.0.source.0.kustomize.0.patches.0.target.0.version",
+						"v1",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.kustomize_patches",
+						"spec.0.source.0.kustomize.0.patches.0.target.0.kind",
+						"Deployment",
+					),
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.kustomize_patches",
+						"spec.0.source.0.kustomize.0.patches.1.patch",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.kustomize_patches",
+						"spec.0.source.0.kustomize.0.patches.1.target.0.label_selector",
+						"app=hello",
+					),
+				),
 			},
 			{
-				Config: testAccArgoCDApplicationDirectory(
+				ResourceName:            "argocd_application.kustomize_patches",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version", "status", "validate"},
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_IgnoreDifferences(t *testing.T) {
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationIgnoreDifferences(
+					acctest.RandomWithPrefix("test-acc")),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.ignore_differences",
+						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.ignore_differences",
+						"spec.0.ignore_difference.0.kind",
+						"Deployment",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.ignore_differences",
+						"spec.0.ignore_difference.1.group",
+						"apps",
+					),
+				),
+			},
+			{
+				ResourceName:            "argocd_application.ignore_differences",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "status", "validate", "metadata.0.generation", "metadata.0.resource_version"},
+			},
+			{
+				Config: testAccArgoCDApplicationIgnoreDiffJQPathExpressions(
+					acctest.RandomWithPrefix("test-acc")),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.ignore_differences_jqpe",
+						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.ignore_differences_jqpe",
+						"spec.0.ignore_difference.0.jq_path_expressions.0",
+						".spec.replicas",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.ignore_differences_jqpe",
+						"spec.0.ignore_difference.1.jq_path_expressions.1",
+						".spec.template.spec.metadata.labels.somelabel",
+					),
+				),
+			},
+			{
+				ResourceName:            "argocd_application.ignore_differences_jqpe",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "status", "validate", "metadata.0.generation", "metadata.0.resource_version"},
+			},
+			{
+				Config: testAccArgoCDApplicationIgnoreDiffManagedFieldsManagers(
+					acctest.RandomWithPrefix("test-acc")),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.ignore_differences_managed_fields_managers",
+						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.ignore_differences_managed_fields_managers",
+						"spec.0.ignore_difference.0.managed_fields_managers.0",
+						"some-controller-owner",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.ignore_differences_managed_fields_managers",
+						"spec.0.ignore_difference.1.managed_fields_managers.1",
+						"some-other-controller-owner",
+					),
+				),
+			},
+			{
+				ResourceName:            "argocd_application.ignore_differences_managed_fields_managers",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "status", "validate", "metadata.0.generation", "metadata.0.resource_version"},
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_RevisionHistoryLimit(t *testing.T) {
+	revisionHistoryLimit := acctest.RandIntRange(0, 9)
+
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationRevisionHistory(
+					acctest.RandomWithPrefix("test-acc"),
+					revisionHistoryLimit,
+				),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.revision_history_limit",
+						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.revision_history_limit",
+						"spec.0.revision_history_limit",
+						fmt.Sprint(revisionHistoryLimit),
+					),
+				),
+			},
+			{
+				ResourceName:            "argocd_application.revision_history_limit",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "status", "validate", "metadata.0.generation", "metadata.0.resource_version", "spec.0.source.0.helm.0.parameter.0.force_string", "spec.0.source.0.helm.0.parameter.1.force_string"},
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_OptionalDestinationNamespace(t *testing.T) {
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplication_OptionalDestinationNamespace(acctest.RandomWithPrefix("test-acc")),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.no_namespace",
+						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.no_namespace",
+						"spec.0.destination.0.namespace",
+						"", // optional strings are maintained in state as blank strings
+					),
+				),
+			},
+			{
+				ResourceName:            "argocd_application.no_namespace",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "status", "validate", "metadata.0.generation", "metadata.0.resource_version"},
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_DirectoryJsonnet(t *testing.T) {
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplication_DirectoryJsonnet(
 					acctest.RandomWithPrefix("test-acc")),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttrSet(
@@ -188,157 +492,23 @@ ingress:
 						"spec.0.source.0.directory.0.jsonnet.0.tla.0.code",
 						"true",
 					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.directory",
+						"spec.0.source.0.directory.0.jsonnet.0.libs.0",
+						"vendor",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.directory",
+						"spec.0.source.0.directory.0.jsonnet.0.libs.1",
+						"foo",
+					),
 				),
 			},
 			{
 				ResourceName:            "argocd_application.directory",
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version"},
-			},
-			{
-				Config: testAccArgoCDApplicationSyncPolicy(
-					acctest.RandomWithPrefix("test-acc")),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(
-						"argocd_application.sync_policy",
-						"metadata.0.uid",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.sync_policy",
-						"spec.0.sync_policy.0.automated.prune",
-						"true",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.sync_policy",
-						"spec.0.sync_policy.0.automated.self_heal",
-						"true",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.sync_policy",
-						"spec.0.sync_policy.0.automated.allow_empty",
-						"true",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.sync_policy",
-						"spec.0.sync_policy.0.retry.0.backoff.duration",
-						"30s",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.sync_policy",
-						"spec.0.sync_policy.0.retry.0.backoff.max_duration",
-						"2m",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.sync_policy",
-						"spec.0.sync_policy.0.retry.0.backoff.factor",
-						"2",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.sync_policy",
-						"spec.0.sync_policy.0.retry.0.limit",
-						"5",
-					),
-				),
-			},
-			{
-				ResourceName:            "argocd_application.sync_policy",
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version"},
-			},
-			{
-				Config: testAccArgoCDApplicationIgnoreDifferences(
-					acctest.RandomWithPrefix("test-acc")),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(
-						"argocd_application.ignore_differences",
-						"metadata.0.uid",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.ignore_differences",
-						"spec.0.ignore_difference.0.kind",
-						"Deployment",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.ignore_differences",
-						"spec.0.ignore_difference.1.group",
-						"apps",
-					),
-				),
-			},
-			{
-				ResourceName:            "argocd_application.ignore_differences",
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"wait", "cascade"},
-			},
-			{
-				SkipFunc: testAccSkipFeatureIgnoreDiffJQPathExpressions,
-				Config: testAccArgoCDApplicationIgnoreDiffJQPathExpressions(
-					acctest.RandomWithPrefix("test-acc")),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(
-						"argocd_application.ignore_differences_jqpe",
-						"metadata.0.uid",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.ignore_differences_jqpe",
-						"spec.0.ignore_difference.0.jq_path_expressions.0",
-						".spec.replicas",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.ignore_differences_jqpe",
-						"spec.0.ignore_difference.1.jq_path_expressions.1",
-						".spec.template.spec.metadata.labels.somelabel",
-					),
-				),
-			},
-			{
-				ResourceName:            "argocd_application.ignore_differences_jqpe",
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"wait", "cascade"},
-			},
-			{
-				Config: testAccArgoCDApplicationSimpleRevisionHistory(commonName, revisionHistoryLimit),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(
-						"argocd_application.simple",
-						"metadata.0.uid",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.simple",
-						"spec.0.revision_history_limit",
-						fmt.Sprint(revisionHistoryLimit),
-					),
-				),
-			},
-		},
-	})
-}
-
-func TestAccArgoCDApplication_NoSyncPolicyBlock(t *testing.T) {
-	resource.ParallelTest(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviders,
-		Steps: []resource.TestStep{
-			{
-				Config: testAccArgoCDApplicationNoSyncPolicy(acctest.RandomWithPrefix("test-acc")),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(
-						"argocd_application.simple",
-						"metadata.0.uid",
-					),
-					resource.TestCheckNoResourceAttr(
-						"argocd_application.simple",
-						"spec.0.sync_policy.0.retry.0.backoff.duration",
-					),
-					resource.TestCheckNoResourceAttr(
-						"argocd_application.simple",
-						"spec.0.sync_policy.0.automated.prune",
-					),
-				),
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version", "status", "validate"},
 			},
 		},
 	})
@@ -361,7 +531,7 @@ func TestAccArgoCDApplication_Recurse(t *testing.T) {
 					),
 					resource.TestCheckNoResourceAttr(
 						"argocd_application.directory",
-						"spec.0.source.0.directory.0.jsonnet",
+						"spec.0.source.0.directory.0.jsonnet.0",
 					),
 				),
 			},
@@ -389,7 +559,7 @@ func TestAccArgoCDApplication_Recurse(t *testing.T) {
 					),
 					resource.TestCheckNoResourceAttr(
 						"argocd_application.directory",
-						"spec.0.source.0.directory.0.jsonnet",
+						"spec.0.source.0.directory.0.jsonnet.0",
 					),
 				),
 			},
@@ -403,7 +573,7 @@ func TestAccArgoCDApplication_Recurse(t *testing.T) {
 					),
 					resource.TestCheckNoResourceAttr(
 						"argocd_application.directory",
-						"spec.0.source.0.directory.0.jsonnet",
+						"spec.0.source.0.directory.0.jsonnet.0",
 					),
 				),
 			},
@@ -416,7 +586,151 @@ func TestAccArgoCDApplication_Recurse(t *testing.T) {
 					),
 					resource.TestCheckNoResourceAttr(
 						"argocd_application.directory",
-						"spec.0.source.0.directory.0.jsonnet",
+						"spec.0.source.0.directory.0.jsonnet.0",
+					),
+				),
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_EmptyDirectory(t *testing.T) {
+	name := acctest.RandomWithPrefix("test-acc")
+
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplication_EmptyDirectory(name),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckNoResourceAttr(
+						"argocd_application.directory",
+						"spec.0.source.0.directory.0.recurse",
+					),
+				),
+			},
+			{
+				ResourceName:            "argocd_application.directory",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version", "status", "validate"},
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_DirectoryIncludeExclude(t *testing.T) {
+	name := acctest.RandomWithPrefix("test-acc")
+
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplication_DirectoryIncludeExclude(name),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"argocd_application.directory",
+						"spec.0.source.0.directory.0.include",
+						"*.yaml",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.directory",
+						"spec.0.source.0.directory.0.exclude",
+						"config.yaml",
+					),
+				),
+			},
+			{
+				ResourceName:            "argocd_application.directory",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version", "status", "validate"},
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_SyncPolicy(t *testing.T) {
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationSyncPolicy(
+					acctest.RandomWithPrefix("test-acc")),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.sync_policy",
+						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.sync_policy",
+						"spec.0.sync_policy.0.automated.0.prune",
+						"true",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.sync_policy",
+						"spec.0.sync_policy.0.automated.0.self_heal",
+						"true",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.sync_policy",
+						"spec.0.sync_policy.0.automated.0.allow_empty",
+						"true",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.sync_policy",
+						"spec.0.sync_policy.0.retry.0.backoff.0.duration",
+						"30s",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.sync_policy",
+						"spec.0.sync_policy.0.retry.0.backoff.0.max_duration",
+						"2m",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.sync_policy",
+						"spec.0.sync_policy.0.retry.0.backoff.0.factor",
+						"2",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.sync_policy",
+						"spec.0.sync_policy.0.retry.0.limit",
+						"5",
+					),
+				),
+			},
+			{
+				ResourceName:            "argocd_application.sync_policy",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version", "status", "validate"},
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_NoSyncPolicyBlock(t *testing.T) {
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationNoSyncPolicy(acctest.RandomWithPrefix("test-acc")),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.no_sync_policy",
+						"metadata.0.uid",
+					),
+					resource.TestCheckNoResourceAttr(
+						"argocd_application.no_sync_policy",
+						"spec.0.sync_policy.0.retry.0.backoff.0.duration",
+					),
+					resource.TestCheckNoResourceAttr(
+						"argocd_application.no_sync_policy",
+						"spec.0.sync_policy.0.automated.0.prune",
 					),
 				),
 			},
@@ -433,16 +747,16 @@ func TestAccArgoCDApplication_EmptySyncPolicyBlock(t *testing.T) {
 				Config: testAccArgoCDApplicationEmptySyncPolicy(acctest.RandomWithPrefix("test-acc")),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttrSet(
-						"argocd_application.simple",
+						"argocd_application.empty_sync_policy",
 						"metadata.0.uid",
 					),
 					resource.TestCheckNoResourceAttr(
-						"argocd_application.simple",
-						"spec.0.sync_policy.0.retry.0.backoff.duration",
+						"argocd_application.empty_sync_policy",
+						"spec.0.sync_policy.0.retry.0.backoff.0.duration",
 					),
 					resource.TestCheckNoResourceAttr(
-						"argocd_application.simple",
-						"spec.0.sync_policy.0.automated.prune",
+						"argocd_application.empty_sync_policy",
+						"spec.0.sync_policy.0.automated.0.prune",
 					),
 				),
 			},
@@ -459,16 +773,16 @@ func TestAccArgoCDApplication_NoAutomatedBlock(t *testing.T) {
 				Config: testAccArgoCDApplicationNoAutomated(acctest.RandomWithPrefix("test-acc")),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttrSet(
-						"argocd_application.simple",
+						"argocd_application.no_automated",
 						"metadata.0.uid",
 					),
 					resource.TestCheckResourceAttrSet(
-						"argocd_application.simple",
-						"spec.0.sync_policy.0.retry.0.backoff.duration",
+						"argocd_application.no_automated",
+						"spec.0.sync_policy.0.retry.0.backoff.0.duration",
 					),
 					resource.TestCheckNoResourceAttr(
-						"argocd_application.simple",
-						"spec.0.sync_policy.0.automated.prune",
+						"argocd_application.no_automated",
+						"spec.0.sync_policy.0.automated.0.prune",
 					),
 				),
 			},
@@ -485,12 +799,16 @@ func TestAccArgoCDApplication_EmptyAutomatedBlock(t *testing.T) {
 				Config: testAccArgoCDApplicationEmptyAutomated(acctest.RandomWithPrefix("test-acc")),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttrSet(
-						"argocd_application.simple",
+						"argocd_application.empty_automated",
 						"metadata.0.uid",
 					),
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.empty_automated",
+						"spec.0.sync_policy.0.automated.#",
+					),
 					resource.TestCheckNoResourceAttr(
-						"argocd_application.simple",
-						"spec.0.sync_policy.0.automated.prune",
+						"argocd_application.empty_automated",
+						"spec.0.sync_policy.0.automated.0.prune",
 					),
 				),
 			},
@@ -645,7 +963,7 @@ func TestAccArgoCDApplication_Info(t *testing.T) {
 					),
 					resource.TestCheckNoResourceAttr(
 						"argocd_application.info",
-						"spec.0.info",
+						"spec.0.info.0",
 					),
 				),
 			},
@@ -659,97 +977,7 @@ func TestAccArgoCDApplication_Info(t *testing.T) {
 					),
 					resource.TestCheckNoResourceAttr(
 						"argocd_application.info",
-						"spec.0.info",
-					),
-				),
-			},
-		},
-	})
-}
-
-func TestProvider_headers(t *testing.T) {
-	name := acctest.RandomWithPrefix("test-acc")
-	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t) },
-		ProviderFactories: testAccProviders,
-		Steps: []resource.TestStep{
-			{
-				Config: fmt.Sprintf("%s %s", `
-				provider "argocd" {
-					headers = [
-						"Hello: HiThere",
-					]
-				}`, testAccArgoCDApplicationSimple(name),
-				),
-			},
-		},
-	})
-}
-
-func TestAccArgoCDApplication_SkipCrds_NotSupported_On_OlderVersions(t *testing.T) {
-	name := acctest.RandomWithPrefix("test-acc-crds")
-
-	resource.ParallelTest(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckFeatureNotSupported(t, featureApplicationHelmSkipCrds) },
-		ProviderFactories: testAccProviders,
-		Steps: []resource.TestStep{
-			// Create tests
-			{
-				Config:      testAccArgoCDApplicationSkipCrds(acctest.RandomWithPrefix("test-acc-crds"), true),
-				ExpectError: regexp.MustCompile("application helm skip_crds is only supported from ArgoCD"),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(
-						"argocd_application.crds",
-						"metadata.0.uid",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.crds",
-						"spec.0.source.0.helm.0.skip_crds",
-						"true",
-					),
-				),
-			},
-			// Update tests
-			{
-				Config: testAccArgoCDApplicationSkipCrds_NoSkip(name),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(
-						"argocd_application.crds",
-						"metadata.0.uid",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.crds",
-						"spec.0.source.0.helm.0.skip_crds",
-						"false",
-					),
-				),
-			},
-			{
-				Config: testAccArgoCDApplicationSkipCrds(name, false),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(
-						"argocd_application.crds",
-						"metadata.0.uid",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.crds",
-						"spec.0.source.0.helm.0.skip_crds",
-						"false",
-					),
-				),
-			},
-			{
-				Config:      testAccArgoCDApplicationSkipCrds(name, true),
-				ExpectError: regexp.MustCompile("application helm skip_crds is only supported from ArgoCD"),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttrSet(
-						"argocd_application.crds",
-						"metadata.0.uid",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_application.crds",
-						"spec.0.source.0.helm.0.skip_crds",
-						"true",
+						"spec.0.info.0",
 					),
 				),
 			},
@@ -761,7 +989,7 @@ func TestAccArgoCDApplication_SkipCrds(t *testing.T) {
 	name := acctest.RandomWithPrefix("test-acc-crds")
 
 	resource.ParallelTest(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckFeatureSupported(t, featureApplicationHelmSkipCrds) },
+		PreCheck:          func() { testAccPreCheck(t) },
 		ProviderFactories: testAccProviders,
 		Steps: []resource.TestStep{
 			{
@@ -810,124 +1038,475 @@ func TestAccArgoCDApplication_SkipCrds(t *testing.T) {
 	})
 }
 
-func TestAccArgoCDApplication_CustomNamespace(t *testing.T) {
-	name := acctest.RandomWithPrefix("test-acc-custom-namespace")
+func TestAccArgoCDApplication_SkipSchemaValidation(t *testing.T) {
+	name := acctest.RandomWithPrefix("test-acc-schema-validation")
 
 	resource.ParallelTest(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckFeatureSupported(t, featureProjectSourceNamespaces) },
+		PreCheck:          func() { testAccPreCheck(t) },
 		ProviderFactories: testAccProviders,
 		Steps: []resource.TestStep{
 			{
-				Config: testAccArgoCDApplicationCustomNamespace(name),
+				Config: testAccArgoCDApplicationSkipSchemaValidation_NoSkip(name),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttrSet(
-						"argocd_application.simple",
+						"argocd_application.schema_validation",
 						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.schema_validation",
+						"spec.0.source.0.helm.0.skip_schema_validation",
+						"false",
 					),
 				),
 			},
 			{
-				ResourceName:            "argocd_application.simple",
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"wait", "cascade"},
+				Config: testAccArgoCDApplicationSkipSchemaValidation(name, true),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.schema_validation",
+						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.schema_validation",
+						"spec.0.source.0.helm.0.skip_schema_validation",
+						"true",
+					),
+				),
+			},
+			{
+				Config: testAccArgoCDApplicationSkipSchemaValidation(name, false),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.schema_validation",
+						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.schema_validation",
+						"spec.0.source.0.helm.0.skip_schema_validation",
+						"false",
+					),
+				),
 			},
 		},
 	})
 }
 
-func testAccArgoCDApplicationSimple(name string) string {
+func TestAccArgoCDApplication_CustomNamespace(t *testing.T) {
+	name := acctest.RandomWithPrefix("test-acc")
+
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t); testAccPreCheckFeatureSupported(t, features.ProjectSourceNamespaces) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationCustomNamespace(name),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.custom_namespace",
+						"metadata.0.uid",
+					),
+				),
+			},
+			{
+				ResourceName:            "argocd_application.custom_namespace",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "status", "validate", "metadata.0.generation", "metadata.0.resource_version", "spec.0.source.0.helm.0.parameter.0.force_string", "spec.0.source.0.helm.0.parameter.1.force_string"},
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_MultipleSources(t *testing.T) {
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccPreCheckFeatureSupported(t, features.MultipleApplicationSources)
+			testAccPreCheckFeatureSupported(t, features.ApplicationSourceName)
+		},
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationMultipleSources(),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.multiple_sources",
+						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.multiple_sources",
+						"spec.0.source.0.chart",
+						"opensearch",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.multiple_sources",
+						"spec.0.source.0.name",
+						"",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.multiple_sources",
+						"spec.0.source.1.path",
+						"test/e2e/testdata/guestbook",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.multiple_sources",
+						"spec.0.source.1.name",
+						"guestbook",
+					),
+				),
+			},
+			{
+				ResourceName:      "argocd_application.multiple_sources",
+				ImportState:       true,
+				ImportStateVerify: true,
+				ImportStateVerifyIgnore: []string{
+					"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version", "status", "validate",
+					"spec.0.source.0.helm.0.parameter.0.force_string",
+					"spec.0.source.0.helm.0.parameter.1.force_string",
+					"spec.0.source.0.helm.0.parameter.2.force_string",
+				},
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_SourcesPrecedenceOverSource(t *testing.T) {
+	name := acctest.RandomWithPrefix("test-acc")
+
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccPreCheckFeatureSupported(t, features.MultipleApplicationSources)
+		},
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationSimple(name, "0.33.0", false),
+				Check: resource.TestCheckResourceAttr(
+					"argocd_application."+name,
+					"spec.0.source.#",
+					"1",
+				),
+			},
+			{
+				// ArgoCD gives `spec.sources` precedence over `spec.source` whenever both are
+				// populated on the live object (see (*ApplicationSpec).HasMultipleSources()
+				// upstream). Terraform itself never writes both fields, but external tools can,
+				// e.g. by adding `sources` to an app that still has a legacy `source` set.
+				// Simulate that by setting `sources` directly via the API, without clearing the
+				// existing `source`, and confirm a refresh reflects the sources ArgoCD actually
+				// syncs rather than the stale singular source.
+				PreConfig: func() {
+					si, err := getServerInterface()
+					if err != nil {
+						t.Error(fmt.Errorf("failed to get server interface: %s", err.Error()))
+						return
+					}
+
+					ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+					defer cancel()
+
+					app, err := si.ApplicationClient.Get(ctx, &applicationClient.ApplicationQuery{Name: &name})
+					if err != nil {
+						t.Error(fmt.Errorf("failed to get application '%s': %s", name, err.Error()))
+						return
+					}
+
+					app.Spec.Sources = application.ApplicationSources{
+						{
+							RepoURL:        "https://kubernetes-sigs.github.io/descheduler",
+							Chart:          "descheduler",
+							TargetRevision: "0.33.0",
+						},
+						{
+							RepoURL:        "https://github.com/argoproj/argo-cd.git",
+							Path:           "test/e2e/testdata/guestbook",
+							TargetRevision: "HEAD",
+						},
+					}
+
+					if _, err = si.ApplicationClient.Update(ctx, &applicationClient.ApplicationUpdateRequest{Application: app}); err != nil {
+						t.Error(fmt.Errorf("failed to update application '%s' with multiple sources: %s", name, err.Error()))
+					}
+				},
+				RefreshState:       true,
+				ExpectNonEmptyPlan: true,
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr("argocd_application."+name, "spec.0.source.#", "2"),
+					resource.TestCheckResourceAttr("argocd_application."+name, "spec.0.source.0.chart", "descheduler"),
+					resource.TestCheckResourceAttr("argocd_application."+name, "spec.0.source.1.path", "test/e2e/testdata/guestbook"),
+				),
+			},
+			{
+				// Restore the resource to a state that matches its config so the framework can
+				// cleanly destroy it once the test completes.
+				Config: testAccArgoCDApplicationSimple(name, "0.33.0", false),
+				Check: resource.TestCheckResourceAttr(
+					"argocd_application."+name,
+					"spec.0.source.#",
+					"1",
+				),
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_HelmValuesFromExternalGitRepo(t *testing.T) {
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+			testAccPreCheckFeatureSupported(t, features.MultipleApplicationSources)
+			testAccPreCheckFeatureSupported(t, features.ApplicationSourceName)
+		},
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationHelmValuesFromExternalGitRepo(),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.helm_values_external",
+						"metadata.0.uid",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.helm_values_external",
+						"spec.0.source.0.chart",
+						"wordpress",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.helm_values_external",
+						"spec.0.source.0.name",
+						"wordpress-helm",
+					),
+					resource.TestCheckResourceAttrSet(
+						"argocd_application.helm_values_external",
+						"spec.0.source.0.helm.0.value_files.#",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.helm_values_external",
+						"spec.0.source.1.ref",
+						"values",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.helm_values_external",
+						"spec.0.source.1.name",
+						"wordpress-values",
+					),
+				),
+			},
+			{
+				ResourceName:            "argocd_application.helm_values_external",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version", "status", "validate"},
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_ManagedNamespaceMetadata(t *testing.T) {
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckFeatureSupported(t, features.ManagedNamespaceMetadata) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplication_ManagedNamespaceMetadata(),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttrSet("argocd_application.namespace_metadata", "metadata.0.uid"),
+					resource.TestCheckResourceAttrSet("argocd_application.namespace_metadata", "spec.0.sync_policy.0.managed_namespace_metadata.0.annotations.%"),
+					resource.TestCheckResourceAttrSet("argocd_application.namespace_metadata", "spec.0.sync_policy.0.managed_namespace_metadata.0.labels.%"),
+				),
+			},
+			{
+				ResourceName:            "argocd_application.namespace_metadata",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"wait", "cascade", "metadata.0.generation", "metadata.0.resource_version", "validate", "status"},
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_Wait(t *testing.T) {
+	chartRevision := "0.33.0"
+	name := acctest.RandomWithPrefix("test-acc")
+
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationSimple(name, chartRevision, true),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"argocd_application."+name,
+						"wait",
+						"true",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application."+name,
+						"spec.0.source.0.target_revision",
+						chartRevision,
+					),
+				),
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_Validate(t *testing.T) {
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationKustomize(
+					acctest.RandomWithPrefix("test-acc"),
+					"path-does-not-exist",
+					true,
+				),
+				ExpectError: regexp.MustCompile("app path does not exist"),
+			},
+			{
+				Config: testAccArgoCDApplicationKustomize(
+					acctest.RandomWithPrefix("test-acc"),
+					"path-does-not-exist",
+					false,
+				),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"argocd_application.kustomize",
+						"validate",
+						"false",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_application.kustomize",
+						"spec.0.source.0.path",
+						"path-does-not-exist",
+					),
+				),
+			},
+		},
+	})
+}
+
+func TestAccArgoCDApplication_Sync(t *testing.T) {
+	name := acctest.RandomWithPrefix("test-acc")
+
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDApplicationSync(
+					name, true),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"argocd_application.sync",
+						"sync",
+						"true",
+					),
+				),
+			},
+			{
+				Config: testAccArgoCDApplicationSync(
+					name, true),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"argocd_application.sync",
+						"sync",
+						"true",
+					),
+				),
+			},
+		},
+	})
+}
+
+func testAccArgoCDApplicationSync(name string, sync bool) string {
 	return fmt.Sprintf(`
-resource "argocd_application" "simple" {
+resource "argocd_application" "sync" {
   metadata {
-    name      = "%s"
+    name      = "%[1]s"
     namespace = "argocd"
     labels = {
       acceptance = "true"
     }
-    annotations = {
-      "this.is.a.really.long.nested.key" = "yes, really!"
-    }
   }
+	
+	sync = %[2]t
 
   spec {
     source {
-      repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-      chart           = "redis"
-      target_revision = "16.9.11"
-      helm {
-        parameter {
-          name  = "image.tag"
-          value = "6.2.5"
-        }
-        parameter {
-          name  = "architecture"
-          value = "standalone"
-        }
-        release_name = "testing"
-      }
+      repo_url        = "https://github.com/argoproj/argo-cd"
+      path            = "test/e2e/testdata/guestbook"
+      target_revision = "HEAD"
     }
 
-    destination {
-      server    = "https://kubernetes.default.svc"
-      namespace = "default"
-    }
-  }
-}
-	`, name)
-}
-
-func testAccArgoCDApplicationSimpleWait(name string) string {
-	return fmt.Sprintf(`
-resource "argocd_application" "simple" {
-  metadata {
-    name      = "%s"
-    namespace = "argocd"
-    labels = {
-      acceptance = "true"
-    }
-    annotations = {
-      "this.is.a.really.long.nested.key" = "yes, really!"
-    }
-  }
-  spec {
-    source {
-      repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-      chart           = "redis"
-      target_revision = "16.9.11"
-      helm {
-        parameter {
-          name  = "image.tag"
-          value = "6.2.5"
-        }
-        parameter {
-          name  = "architecture"
-          value = "standalone"
-        }
-        release_name = "testing"
-      }
-    }
     sync_policy {
-      automated = {
-        prune     = true
-        self_heal = true
-      }
+      sync_options = ["CreateNamespace=true"]
     }
+
     destination {
       server    = "https://kubernetes.default.svc"
-      namespace = "default"
+      namespace = "%[1]s"
     }
   }
-  wait = true
 }
-	`, name)
+	`, name, sync)
+}
+
+func testAccArgoCDApplicationSimple(name, targetRevision string, wait bool) string {
+	return fmt.Sprintf(`
+resource "argocd_application" "%[1]s" {
+  metadata {
+    name      = "%[1]s"
+    namespace = "argocd"
+    labels = {
+      acceptance = "true"
+    }
+    annotations = {
+      "this.is.a.really.long.nested.key" = "yes, really!"
+    }
+  }
+
+  spec {
+    source {
+      repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+      chart           = "descheduler"
+      target_revision = "%[2]s"
+      helm {
+        parameter {
+          name  = "service.type"
+          value = "NodePort"
+        }
+        release_name = "testing"
+      }
+    }
+
+    sync_policy {
+      automated {
+        prune       = true
+        self_heal   = true
+        allow_empty = false
+      }
+      sync_options = ["CreateNamespace=true"]
+    }
+
+    destination {
+      server    = "https://kubernetes.default.svc"
+      namespace = "%[1]s"
+    }
+  }
+  wait = %[3]t
+}
+    `, name, targetRevision, wait)
 }
 
 func testAccArgoCDApplicationHelm(name, helmValues string) string {
 	return fmt.Sprintf(`
 resource "argocd_application" "helm" {
   metadata {
-    name      = "%s"
+    name      = "%[1]s"
     namespace = "argocd"
     labels = {
       acceptance = "true"
@@ -936,9 +1515,9 @@ resource "argocd_application" "helm" {
 
   spec {
     source {
-      repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-      chart           = "redis"
-      target_revision = "16.9.11"
+      repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+      chart           = "descheduler"
+      target_revision = "0.33.0"
       helm {
         release_name = "testing"
         
@@ -951,38 +1530,81 @@ resource "argocd_application" "helm" {
           value = "standalone"
         }
 
+        pass_credentials = true
+        ignore_missing_value_files = true
+		version = "v3"
+
         value_files = ["values.yaml"]
 
         values = <<EOT
-%s
+%[2]s
 EOT
       }
     }
 
+    sync_policy {
+      sync_options = ["CreateNamespace=true"]
+    }
+
     destination {
       server    = "https://kubernetes.default.svc"
-      namespace = "default"
+      namespace = "%[1]s"
     }
   }
 }
 	`, name, helmValues)
 }
 
-func testAccArgoCDApplicationKustomize(name string) string {
+func testAccArgoCDApplicationHelm_FileParameters(name string) string {
+	return fmt.Sprintf(`
+resource "argocd_application" "helm_file_parameters" {
+	metadata {
+		name      = "%[1]s"
+		namespace = "argocd"
+	}
+
+	spec {
+		source {
+			repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+			chart           = "descheduler"
+			target_revision = "0.33.0"
+
+			helm {
+				release_name = "testing"
+				file_parameter {
+					name = "foo"
+					path = "does-not-exist.txt"
+				}
+			}
+		}
+
+		sync_policy {
+			sync_options = ["CreateNamespace=true"]
+		}
+
+		destination {
+			server    = "https://kubernetes.default.svc"
+			namespace = "%[1]s"
+		}
+	}
+}`, name)
+}
+
+func testAccArgoCDApplicationKustomize(name string, path string, validate bool) string {
 	return fmt.Sprintf(`
 resource "argocd_application" "kustomize" {
-  metadata {
-    name      = "%s"
-    namespace = "argocd"
-    labels = {
-      acceptance = "true"
-    }
-  }
+	metadata {
+		name      = "%s"
+		namespace = "argocd"
+		labels = {
+			acceptance = "true"
+		}
+	}
 
   spec {
     source {
       repo_url        = "https://github.com/kubernetes-sigs/kustomize"
-      path            = "examples/helloWorld"
+      path            = "%s"
       target_revision = "release-kustomize-v3.7"
       kustomize {
   	    name_prefix  = "foo-"
@@ -998,6 +1620,75 @@ resource "argocd_application" "kustomize" {
 		  "this.is.a.common" = "anno-tation"
 		  "another.io/one"   = "false"
 	    }
+      }
+    }
+
+    destination {
+      server    = "https://kubernetes.default.svc"
+      namespace = "default"
+    }
+  }
+
+  validate = %t
+}
+  `, name, path, validate)
+}
+
+func testAccArgoCDApplicationKustomizePatches(name string) string {
+	return fmt.Sprintf(`
+resource "argocd_application" "kustomize_patches" {
+  metadata {
+    name      = "%s"
+    namespace = "argocd"
+    labels = {
+      acceptance = "true"
+    }
+  }
+
+  spec {
+    source {
+      repo_url        = "https://github.com/kubernetes-sigs/kustomize"
+      path            = "examples/helloWorld"
+      target_revision = "release-kustomize-v3.7"
+      kustomize {
+        name_prefix = "foo-"
+        name_suffix = "-bar"
+        images = [
+          "foo=hashicorp/terraform:light",
+        ]
+        common_labels = {
+          "this.is.a.common" = "la-bel"
+          "another.io/one"   = "true"
+        }
+        common_annotations = {
+          "this.is.a.common" = "anno-tation"
+          "another.io/one"   = "false"
+        }
+
+        patches {
+          target {
+            group   = "apps"
+            version = "v1"
+            kind    = "Deployment"
+          }
+
+          patch = <<-EOT
+- op: add
+  path: /spec/template/metadata/labels/app.kubernetes.io~1version
+  value: 1.21.0
+EOT
+        }
+        patches {
+          target {
+            label_selector = "app=hello"
+          }
+
+          patch = <<-EOT
+- op: add
+  path: /spec/template/spec/containers/0/image
+  value: nginx:1.21.0
+EOT
+        }
       }
     }
 
@@ -1063,7 +1754,7 @@ resource "argocd_application" "directory" {
 	`, name, path)
 }
 
-func testAccArgoCDApplicationDirectory(name string) string {
+func testAccArgoCDApplication_DirectoryJsonnet(name string) string {
 	return fmt.Sprintf(`
 resource "argocd_application" "directory" {
   metadata {
@@ -1097,6 +1788,10 @@ resource "argocd_application" "directory" {
             value = "yetanothervalue"
             code  = true
           }
+          libs = [
+            "vendor",
+            "foo"
+          ]
         }
       }
     }
@@ -1169,8 +1864,8 @@ resource "argocd_application" "directory" {
 
   spec {
     source {
-      repo_url        = "https://github.com/argoproj/argocd-example-apps"
-      path            = "guestbook"
+      repo_url        = "https://github.com/argoproj/argo-cd"
+      path            = "test/e2e/testdata/guestbook"
       target_revision = "HEAD"
       directory {
         recurse = %s
@@ -1186,6 +1881,66 @@ resource "argocd_application" "directory" {
 	`, name, strconv.FormatBool(recurse))
 }
 
+func testAccArgoCDApplication_EmptyDirectory(name string) string {
+	return fmt.Sprintf(`
+resource "argocd_application" "directory" {
+  metadata {
+    name      = "%s"
+    namespace = "argocd"
+    labels = {
+      acceptance = "true"
+    }
+  }
+
+  spec {
+    source {
+      repo_url        = "https://github.com/argoproj/argo-cd"
+      path            = "test/e2e/testdata/guestbook"
+      target_revision = "HEAD"
+      directory {}
+    }
+
+    destination {
+      server    = "https://kubernetes.default.svc"
+      namespace = "default"
+    }
+  }
+}
+    `, name)
+}
+
+func testAccArgoCDApplication_DirectoryIncludeExclude(name string) string {
+	return fmt.Sprintf(`
+resource "argocd_application" "directory" {
+  metadata {
+    name      = "%s"
+    namespace = "argocd"
+    labels = {
+      acceptance = "true"
+    }
+  }
+
+  spec {
+    source {
+      repo_url        = "https://github.com/argoproj/argo-cd"
+      path            = "test/e2e/testdata/guestbook"
+      target_revision = "HEAD"
+      directory {
+        recurse = true
+		exclude = "config.yaml"
+		include = "*.yaml"
+      }
+    }
+
+    destination {
+      server    = "https://kubernetes.default.svc"
+      namespace = "default"
+    }
+  }
+}
+	`, name)
+}
+
 func testAccArgoCDApplicationSyncPolicy(name string) string {
 	return fmt.Sprintf(`
 resource "argocd_application" "sync_policy" {
@@ -1199,9 +1954,9 @@ resource "argocd_application" "sync_policy" {
 
   spec {
     source {
-      repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-      chart           = "redis"
-      target_revision = "16.9.11"
+      repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+      chart           = "descheduler"
+      target_revision = "0.33.0"
     }
 
     destination {
@@ -1210,14 +1965,14 @@ resource "argocd_application" "sync_policy" {
     }
     
     sync_policy {
-      automated = {
+      automated {
         prune       = true
         self_heal   = true
         allow_empty = true
       }
       retry {
         limit   = "5"
-        backoff = {
+        backoff {
           duration     = "30s"
           max_duration = "2m"
           factor       = "2"
@@ -1242,9 +1997,9 @@ resource "argocd_application" "ignore_differences" {
 
   spec {
     source {
-      repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-      chart           = "redis"
-      target_revision = "16.9.11"
+      repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+      chart           = "descheduler"
+      target_revision = "0.33.0"
     }
 
     destination {
@@ -1285,9 +2040,9 @@ resource "argocd_application" "ignore_differences_jqpe" {
 
   spec {
     source {
-      repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-      chart           = "redis"
-      target_revision = "16.9.11"
+      repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+      chart           = "descheduler"
+      target_revision = "0.33.0"
     }
 
     destination {
@@ -1315,18 +2070,87 @@ resource "argocd_application" "ignore_differences_jqpe" {
 	`, name)
 }
 
-func testAccArgoCDApplicationNoSyncPolicy(name string) string {
+func testAccArgoCDApplicationIgnoreDiffManagedFieldsManagers(name string) string {
 	return fmt.Sprintf(`
-resource "argocd_application" "simple" {
+resource "argocd_application" "ignore_differences_managed_fields_managers" {
+  metadata {
+    name      = "%s"
+    namespace = "argocd"
+    labels = {
+      acceptance = "true"
+    }
+  }
+
+  spec {
+    source {
+      repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+      chart           = "descheduler"
+      target_revision = "0.33.0"
+    }
+
+    destination {
+      server    = "https://kubernetes.default.svc"
+      namespace = "default"
+    }
+    
+    ignore_difference {
+      group                   = "apps"
+      kind                    = "Deployment"
+      json_pointers           = ["/spec/replicas"]
+      managed_fields_managers = ["some-controller-owner"]
+    }
+
+    ignore_difference {
+      group         = "apps"
+      kind          = "StatefulSet"
+      name          = "someStatefulSet"
+
+      managed_fields_managers = [
+        "some-controller-owner",
+        "some-other-controller-owner",
+      ]
+    }
+  }
+}
+	`, name)
+}
+
+func testAccArgoCDApplication_OptionalDestinationNamespace(name string) string {
+	return fmt.Sprintf(`
+resource "argocd_application" "no_namespace" {
   metadata {
     name      = "%s"
     namespace = "argocd"
   }
   spec {
     source {
-      repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-      chart           = "redis"
-      target_revision = "16.9.11"
+      repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+      chart           = "descheduler"
+      target_revision = "0.33.0"
+      helm {
+        release_name = "testing"
+      }
+    }
+    destination {
+      server    = "https://kubernetes.default.svc"
+    }
+  }
+}
+`, name)
+}
+
+func testAccArgoCDApplicationNoSyncPolicy(name string) string {
+	return fmt.Sprintf(`
+resource "argocd_application" "no_sync_policy" {
+  metadata {
+    name      = "%s"
+    namespace = "argocd"
+  }
+  spec {
+    source {
+      repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+      chart           = "descheduler"
+      target_revision = "0.33.0"
       helm {
         release_name = "testing"
       }
@@ -1342,16 +2166,16 @@ resource "argocd_application" "simple" {
 
 func testAccArgoCDApplicationEmptySyncPolicy(name string) string {
 	return fmt.Sprintf(`
-resource "argocd_application" "simple" {
+resource "argocd_application" "empty_sync_policy" {
   metadata {
     name      = "%s"
     namespace = "argocd"
   }
   spec {
     source {
-      repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-      chart           = "redis"
-      target_revision = "16.9.11"
+      repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+      chart           = "descheduler"
+      target_revision = "0.33.0"
       helm {
         release_name = "testing"
       }
@@ -1369,16 +2193,16 @@ resource "argocd_application" "simple" {
 
 func testAccArgoCDApplicationNoAutomated(name string) string {
 	return fmt.Sprintf(`
-resource "argocd_application" "simple" {
+resource "argocd_application" "no_automated" {
   metadata {
     name      = "%s"
     namespace = "argocd"
   }
   spec {
     source {
-      repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-      chart           = "redis"
-      target_revision = "16.9.11"
+      repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+      chart           = "descheduler"
+      target_revision = "0.33.0"
       helm {
         release_name = "testing"
       }
@@ -1386,7 +2210,7 @@ resource "argocd_application" "simple" {
     sync_policy {
       retry {
         limit   = "5"
-        backoff = {
+        backoff {
           duration     = "30s"
           max_duration = "2m"
           factor       = "2"
@@ -1404,22 +2228,22 @@ resource "argocd_application" "simple" {
 
 func testAccArgoCDApplicationEmptyAutomated(name string) string {
 	return fmt.Sprintf(`
-resource "argocd_application" "simple" {
+resource "argocd_application" "empty_automated" {
   metadata {
     name      = "%s"
     namespace = "argocd"
   }
   spec {
     source {
-      repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-      chart           = "redis"
-      target_revision = "16.9.11"
+      repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+      chart           = "descheduler"
+      target_revision = "0.33.0"
       helm {
         release_name = "testing"
       }
     }
     sync_policy {
-      automated = {}
+      automated {}
     }
     destination {
       server    = "https://kubernetes.default.svc"
@@ -1430,9 +2254,9 @@ resource "argocd_application" "simple" {
 	`, name)
 }
 
-func testAccArgoCDApplicationSimpleRevisionHistory(name string, revision_history_limit int) string {
+func testAccArgoCDApplicationRevisionHistory(name string, revision_history_limit int) string {
 	return fmt.Sprintf(`
-resource "argocd_application" "simple" {
+resource "argocd_application" "revision_history_limit" {
   metadata {
     name      = "%s"
     namespace = "argocd"
@@ -1447,9 +2271,9 @@ resource "argocd_application" "simple" {
   spec {
     revision_history_limit = %d
     source {
-      repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-      chart           = "redis"
-      target_revision = "16.9.11"
+      repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+      chart           = "descheduler"
+      target_revision = "0.33.0"
       helm {
         parameter {
           name  = "image.tag"
@@ -1489,8 +2313,8 @@ resource "argocd_application" "info" {
       value = "%s"
     }
     source {
-      repo_url        = "https://github.com/argoproj/argocd-example-apps"
-      path            = "guestbook"
+      repo_url        = "https://github.com/argoproj/argo-cd"
+      path            = "test/e2e/testdata/guestbook"
       target_revision = "HEAD"
     }
 
@@ -1519,8 +2343,8 @@ resource "argocd_application" "info" {
       value = "%s"
     }
     source {
-      repo_url        = "https://github.com/argoproj/argocd-example-apps"
-      path            = "guestbook"
+      repo_url        = "https://github.com/argoproj/argo-cd"
+      path            = "test/e2e/testdata/guestbook"
       target_revision = "HEAD"
     }
 
@@ -1549,8 +2373,8 @@ resource "argocd_application" "info" {
       name = "%s"
     }
     source {
-      repo_url        = "https://github.com/argoproj/argocd-example-apps"
-      path            = "guestbook"
+      repo_url        = "https://github.com/argoproj/argo-cd"
+      path            = "test/e2e/testdata/guestbook"
       target_revision = "HEAD"
     }
 
@@ -1578,8 +2402,8 @@ resource "argocd_application" "info" {
     info {
     }
     source {
-      repo_url        = "https://github.com/argoproj/argocd-example-apps"
-      path            = "guestbook"
+      repo_url        = "https://github.com/argoproj/argo-cd"
+      path            = "test/e2e/testdata/guestbook"
       target_revision = "HEAD"
     }
 
@@ -1605,8 +2429,8 @@ resource "argocd_application" "info" {
 
   spec {
     source {
-      repo_url        = "https://github.com/argoproj/argocd-example-apps"
-      path            = "guestbook"
+      repo_url        = "https://github.com/argoproj/argo-cd"
+      path            = "test/e2e/testdata/guestbook"
       target_revision = "HEAD"
     }
 
@@ -1632,9 +2456,9 @@ resource "argocd_application" "crds" {
 
   spec {
     source {
-		repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-		chart           = "redis"
-		target_revision = "16.9.11"
+		repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+		chart           = "descheduler"
+		target_revision = "0.33.0"
 		helm {
 		  parameter {
 			name  = "image.tag"
@@ -1670,9 +2494,84 @@ resource "argocd_application" "crds" {
 
   spec {
     source {
-		repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-		chart           = "redis"
-		target_revision = "16.9.11"
+		repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+		chart           = "descheduler"
+		target_revision = "0.33.0"
+		helm {
+		  parameter {
+			name  = "image.tag"
+			value = "6.2.5"
+		  }
+		  parameter {
+			name  = "architecture"
+			value = "standalone"
+		  }
+		  release_name = "testing"
+		}
+	}
+    destination {
+      server    = "https://kubernetes.default.svc"
+      namespace = "default"
+    }
+  }
+}
+	`, name)
+}
+
+func testAccArgoCDApplicationSkipSchemaValidation(name string, skipSchemaValidation bool) string {
+	return fmt.Sprintf(`
+resource "argocd_application" "schema_validation" {
+  metadata {
+    name      = "%s"
+    namespace = "argocd"
+    labels = {
+      acceptance = "true"
+    }
+  }
+
+  spec {
+    source {
+		repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+		chart           = "descheduler"
+		target_revision = "0.33.0"
+		helm {
+		  parameter {
+			name  = "image.tag"
+			value = "6.2.5"
+		  }
+		  parameter {
+			name  = "architecture"
+			value = "standalone"
+		  }
+		  release_name = "testing"
+		  skip_schema_validation = %t
+		}
+	}
+    destination {
+      server    = "https://kubernetes.default.svc"
+      namespace = "default"
+    }
+  }
+}
+	`, name, skipSchemaValidation)
+}
+
+func testAccArgoCDApplicationSkipSchemaValidation_NoSkip(name string) string {
+	return fmt.Sprintf(`
+resource "argocd_application" "schema_validation" {
+  metadata {
+    name      = "%s"
+    namespace = "argocd"
+    labels = {
+      acceptance = "true"
+    }
+  }
+
+  spec {
+    source {
+		repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+		chart           = "descheduler"
+		target_revision = "0.33.0"
 		helm {
 		  parameter {
 			name  = "image.tag"
@@ -1696,7 +2595,7 @@ resource "argocd_application" "crds" {
 
 func testAccArgoCDApplicationCustomNamespace(name string) string {
 	return fmt.Sprintf(`
-resource "argocd_project" "simple" {
+resource "argocd_project" "custom_namespace" {
   metadata {
     name      = "%[1]s"
     namespace = "argocd"
@@ -1714,18 +2613,18 @@ resource "argocd_project" "simple" {
   }
 }
 
-resource "argocd_application" "simple" {
+resource "argocd_application" "custom_namespace" {
   metadata {
     name      = "%[1]s"
     namespace = "mynamespace-1"
   }
 
   spec {
-    project = argocd_project.simple.metadata[0].name
+    project = argocd_project.custom_namespace.metadata[0].name
     source {
-      repo_url        = "https://raw.githubusercontent.com/bitnami/charts/archive-full-index/bitnami"
-      chart           = "redis"
-      target_revision = "16.9.11"
+      repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+      chart           = "descheduler"
+      target_revision = "0.33.0"
       helm {
         parameter {
           name  = "image.tag"
@@ -1748,20 +2647,129 @@ resource "argocd_application" "simple" {
 	`, name)
 }
 
-func testAccSkipFeatureIgnoreDiffJQPathExpressions() (bool, error) {
-	p, _ := testAccProviders["argocd"]()
-	_ = p.Configure(context.Background(), &terraform.ResourceConfig{})
-	server := p.Meta().(*ServerInterface)
-	err := server.initClients()
-	if err != nil {
-		return false, err
+func testAccArgoCDApplicationMultipleSources() string {
+	return `
+resource "argocd_application" "multiple_sources" {
+  metadata {
+    name      = "multiple-sources"
+    namespace = "argocd"
+  }
+
+  spec {
+    project = "default" 
+	
+	source {
+		repo_url        = "https://opensearch-project.github.io/helm-charts"
+		chart           = "opensearch"
+		target_revision = "3.0.0"
+		helm {
+			parameter {
+				name  = "replicas"
+				value = "1"
+			}
+
+			parameter {
+				name = "singleNode"
+				value = "true"
+			}
+
+			parameter {
+				name = "persistence.enabled"
+				value = "false"
+			}
+
+			values = <<-EOT
+			  extraEnvs:
+			    - name: "DISABLE_SECURITY_PLUGIN"
+			      value: "true"
+			EOT
+		}
 	}
-	featureSupported, err := server.isFeatureSupported(featureIgnoreDiffJQPathExpressions)
-	if err != nil {
-		return false, err
+
+	source {
+		repo_url        = "https://github.com/argoproj/argo-cd.git"
+		path            = "test/e2e/testdata/guestbook"
+		target_revision = "HEAD"
+		name            = "guestbook"
 	}
-	if !featureSupported {
-		return true, nil
+
+    destination {
+      server    = "https://kubernetes.default.svc"
+      namespace = "default"
+    }
+  }
+}`
+}
+
+func testAccArgoCDApplication_ManagedNamespaceMetadata() string {
+	return `
+resource "argocd_application" "namespace_metadata" {
+	metadata {
+		name      = "namespace-metadata"
+		namespace = "argocd"
 	}
-	return false, nil
+
+	spec {
+		project = "default" 
+
+		source {
+			repo_url        = "https://kubernetes-sigs.github.io/descheduler"
+			chart           = "descheduler"
+			target_revision = "0.33.0"
+		}
+
+		destination {
+			server    = "https://kubernetes.default.svc"
+			namespace = "managed-namespace"
+		}
+
+		sync_policy {
+			managed_namespace_metadata {
+				annotations = {
+					"this.is.a.really.long.nested.key" = "yes, really!"
+				}
+				labels = {
+					foo = "bar"
+				}
+			}
+			sync_options = ["CreateNamespace=true"]
+		}
+	}
+}`
+}
+
+func testAccArgoCDApplicationHelmValuesFromExternalGitRepo() string {
+	return `
+resource "argocd_application" "helm_values_external" {
+  metadata {
+    name      = "helm-values-external"
+    namespace = "argocd"
+  }
+
+  spec {
+    project = "default" 
+  
+    source {
+      name            = "wordpress-helm"   
+      repo_url        = "https://charts.helm.sh/stable"
+      chart           = "wordpress"
+      target_revision = "9.0.3"
+      helm {
+        value_files = ["$values/helm-dependency/values.yaml"]
+      }
+    }
+
+    source {
+      name            = "wordpress-values"
+      ref             = "values"
+      repo_url        = "https://github.com/argoproj/argocd-example-apps.git"
+      target_revision = "HEAD"
+    }
+
+    destination {
+      server    = "https://kubernetes.default.svc"
+      namespace = "default"
+    }
+  }
+}`
 }

@@ -1,0 +1,150 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - asasalint
+    - asciicheck
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - depguard
+    - dogsled
+    - durationcheck
+    - errcheck
+    - errname
+    - errorlint
+    - gocritic
+    - govet
+    - ineffassign
+    - makezero
+    - misspell
+    - mnd
+    - nakedret
+    - nilerr
+    - nolintlint
+    - paralleltest
+    - predeclared
+    - staticcheck
+    - tparallel
+    - unconvert
+    - unparam
+    - unused
+    - usetesting
+    - whitespace
+  settings:
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest
+              desc: "Use github.com/hashicorp/terraform-plugin-testing/helper/acctest instead"
+            - pkg: github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource
+              desc: "Use github.com/hashicorp/terraform-plugin-testing/helper/resource instead"
+            - pkg: github.com/hashicorp/terraform-plugin-sdk/v2/terraform
+              desc: "Use github.com/hashicorp/terraform-plugin-testing/terraform instead"
+    dogsled:
+      max-blank-identifiers: 3
+    errcheck:
+      exclude-functions:
+        - github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema:ForceNew|Set
+        - fmt:.*
+        - io:Close
+    errorlint:
+      errorf: false
+    goconst:
+      min-occurrences: 6
+    gocritic:
+      enabled-tags:
+        - diagnostic
+      disabled-tags:
+        - style
+        - performance
+        - experimental
+        - opinionated
+    mnd:
+      checks:
+        - argument
+      ignored-functions:
+        - resource.Retry
+        - schema.DefaultTimeout
+        - validation.*
+        - int64validator.*
+        - listvalidator.*
+        - stringvalidator.*
+        - SetDefaultCreateTimeout
+        - SetDefaultReadTimeout
+        - SetDefaultUpdateTimeout
+        - SetDefaultDeleteTimeout
+        - make
+        - strconv.FormatFloat
+        - strconv.FormatInt
+        - strconv.ParseFloat
+        - strconv.ParseInt
+        - strings.SplitN
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-no-explanation:
+        - gomnd
+        - paralleltest
+        - tparallel
+        - unparam
+      allow-unused: false
+    predeclared:
+      ignore:
+        - cap
+        - close
+        - copy
+        - delete
+        - len
+        - new
+    staticcheck:
+      checks:
+        - -SA1019
+        - -ST1005
+        - all
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - paralleltest
+        text: Function TestAcc
+      - linters:
+          - tparallel
+        text: TestAcc
+      - linters:
+          - unparam
+        text: always receives
+      - linters:
+          - contextcheck
+        path: _test\.go
+      - linters:
+          - goconst
+        path: (.+)_test\.go
+      - linters:
+          - staticcheck
+        text: "ST1003:"
+      - linters:
+          - staticcheck
+        text: "SA1019:"
+        path: internal/types/pgp_public_key.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

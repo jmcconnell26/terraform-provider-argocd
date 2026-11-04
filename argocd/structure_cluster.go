@@ -3,35 +3,40 @@ package argocd
 import (
 	"fmt"
 
-	application "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	application "github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
-// Expand
-
 func expandCluster(d *schema.ResourceData) (*application.Cluster, error) {
-	var err error
 	cluster := &application.Cluster{}
+
 	if v, ok := d.GetOk("name"); ok {
 		cluster.Name = v.(string)
 	}
+
 	if v, ok := d.GetOk("server"); ok {
 		cluster.Server = v.(string)
 	}
+
 	if v, ok := d.GetOk("shard"); ok {
-		cluster.Shard, err = convertStringToInt64Pointer(v.(string))
+		shard, err := convertStringToInt64Pointer(v.(string))
 		if err != nil {
 			return nil, err
 		}
+
+		cluster.Shard = shard
 	}
+
 	if ns, ok := d.GetOk("namespaces"); ok {
 		for _, n := range ns.([]interface{}) {
 			if n == nil {
 				return nil, fmt.Errorf("namespaces: must contain non-empty strings")
 			}
+
 			cluster.Namespaces = append(cluster.Namespaces, n.(string))
 		}
 	}
+
 	if v, ok := d.GetOk("config"); ok {
 		cluster.Config = expandClusterConfig(v.([]interface{})[0])
 	}
@@ -44,72 +49,76 @@ func expandCluster(d *schema.ResourceData) (*application.Cluster, error) {
 		cluster.Project = v.(string)
 	}
 
-	return cluster, err
+	return cluster, nil
 }
 
-func expandClusterConfig(config interface{}) (
-	clusterConfig application.ClusterConfig) {
+func expandClusterConfig(config interface{}) application.ClusterConfig {
+	clusterConfig := application.ClusterConfig{}
+
 	c := config.(map[string]interface{})
 	if aws, ok := c["aws_auth_config"].([]interface{}); ok && len(aws) > 0 {
 		clusterConfig.AWSAuthConfig = &application.AWSAuthConfig{}
+
 		for k, v := range aws[0].(map[string]interface{}) {
-			if k == "cluster_name" {
+			switch k {
+			case "cluster_name":
 				clusterConfig.AWSAuthConfig.ClusterName = v.(string)
-			}
-			if k == "role_arn" {
+			case "role_arn":
 				clusterConfig.AWSAuthConfig.RoleARN = v.(string)
 			}
 		}
 	}
+
 	if v, ok := c["bearer_token"]; ok {
 		clusterConfig.BearerToken = v.(string)
 	}
+
 	if v, ok := c["username"]; ok {
 		clusterConfig.Username = v.(string)
 	}
+
 	if v, ok := c["password"]; ok {
 		clusterConfig.Password = v.(string)
 	}
+
 	if tls, ok := c["tls_client_config"].([]interface{}); ok && len(tls) > 0 {
 		clusterConfig.TLSClientConfig = application.TLSClientConfig{}
+
 		for k, v := range tls[0].(map[string]interface{}) {
-			if k == "ca_data" {
-				clusterConfig.TLSClientConfig.CAData = []byte(v.(string))
-			}
-			if k == "cert_data" {
-				clusterConfig.TLSClientConfig.CertData = []byte(v.(string))
-			}
-			if k == "key_data" {
-				clusterConfig.TLSClientConfig.KeyData = []byte(v.(string))
-			}
-			if k == "insecure" {
-				clusterConfig.TLSClientConfig.Insecure = v.(bool)
-			}
-			if k == "server_name" {
-				clusterConfig.TLSClientConfig.ServerName = v.(string)
+			switch k {
+			case "ca_data":
+				clusterConfig.CAData = []byte(v.(string))
+			case "cert_data":
+				clusterConfig.CertData = []byte(v.(string))
+			case "key_data":
+				clusterConfig.KeyData = []byte(v.(string))
+			case "insecure":
+				clusterConfig.Insecure = v.(bool)
+			case "server_name":
+				clusterConfig.ServerName = v.(string)
 			}
 		}
 	}
+
 	if epc, ok := c["exec_provider_config"].([]interface{}); ok && len(epc) > 0 {
 		clusterConfig.ExecProviderConfig = &application.ExecProviderConfig{}
+
 		for k, v := range epc[0].(map[string]interface{}) {
-			if k == "api_version" {
+			switch k {
+			case "api_version":
 				clusterConfig.ExecProviderConfig.APIVersion = v.(string)
-			}
-			if k == "args" {
+			case "args":
 				argsI := v.([]interface{})
 				for _, argI := range argsI {
 					clusterConfig.ExecProviderConfig.Args = append(clusterConfig.ExecProviderConfig.Args, argI.(string))
 				}
-			}
-			if k == "command" {
+			case "command":
 				clusterConfig.ExecProviderConfig.Command = v.(string)
-			}
-			if k == "install_hint" {
+			case "install_hint":
 				clusterConfig.ExecProviderConfig.InstallHint = v.(string)
-			}
-			if k == "env" {
+			case "env":
 				clusterConfig.ExecProviderConfig.Env = make(map[string]string)
+
 				envI := v.(map[string]interface{})
 				for key, val := range envI {
 					clusterConfig.ExecProviderConfig.Env[key] = val.(string)
@@ -117,10 +126,9 @@ func expandClusterConfig(config interface{}) (
 			}
 		}
 	}
-	return
-}
 
-// Flatten
+	return clusterConfig
+}
 
 func flattenCluster(cluster *application.Cluster, d *schema.ResourceData) error {
 	r := map[string]interface{}{
@@ -131,19 +139,23 @@ func flattenCluster(cluster *application.Cluster, d *schema.ResourceData) error 
 		"config":     flattenClusterConfig(cluster.Config, d),
 		"project":    cluster.Project,
 	}
+
 	if len(cluster.Annotations) != 0 || len(cluster.Labels) != 0 {
 		// The generic flattenMetadata function can not be used since the Cluster
 		// object does not actually have ObjectMeta, just label and annotation maps
 		r["metadata"] = flattenClusterMetadata(cluster.Annotations, cluster.Labels)
 	}
+
 	if cluster.Shard != nil {
 		r["shard"] = convertInt64PointerToString(cluster.Shard)
 	}
+
 	for k, v := range r {
 		if err := persistToState(k, v, d); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -163,17 +175,12 @@ func flattenClusterInfo(info application.ClusterInfo) []map[string]interface{} {
 }
 
 func flattenClusterConfig(config application.ClusterConfig, d *schema.ResourceData) []map[string]interface{} {
-	var scc application.ClusterConfig
 	r := map[string]interface{}{
 		"username":             config.Username,
-		"exec_provider_config": flattenClusterConfigExecProviderConfig(config.ExecProviderConfig),
+		"exec_provider_config": flattenClusterConfigExecProviderConfig(d),
+		"tls_client_config":    flattenClusterConfigTLSClientConfig(config.TLSClientConfig, d),
 	}
-	if stateClusterConfig, ok := d.GetOk("config"); ok {
-		scc = expandClusterConfig(stateClusterConfig.([]interface{})[0])
-		r["password"] = scc.Password
-		r["bearer_token"] = scc.BearerToken
-		r["tls_client_config"] = flattenClusterConfigTLSClientConfig(scc)
-	}
+
 	if config.AWSAuthConfig != nil {
 		r["aws_auth_config"] = []map[string]string{
 			{
@@ -182,35 +189,78 @@ func flattenClusterConfig(config application.ClusterConfig, d *schema.ResourceDa
 			},
 		}
 	}
+
+	// ArgoCD API does not return these fields as they may contain
+	// sensitive data. Thus, we can't track the state of these
+	// attributes and load them from state instead.
+	// See https://github.com/argoproj/argo-cd/blob/8840929187f4dd7b9d9fd908ea5085a006895507/server/cluster/cluster.go#L448-L466
+	if bt, ok := d.GetOk("config.0.bearer_token"); ok {
+		r["bearer_token"] = bt
+	}
+
+	if p, ok := d.GetOk("config.0.password"); ok {
+		r["password"] = p
+	}
+
 	return []map[string]interface{}{r}
 }
 
-func flattenClusterConfigTLSClientConfig(stateClusterConfig application.ClusterConfig) []map[string]interface{} {
-	return []map[string]interface{}{
-		{
-			"ca_data":     string(stateClusterConfig.CAData),
-			"cert_data":   string(stateClusterConfig.CertData),
-			"key_data":    string(stateClusterConfig.KeyData),
-			"insecure":    stateClusterConfig.Insecure,
-			"server_name": stateClusterConfig.ServerName,
-		},
+func flattenClusterConfigTLSClientConfig(tcc application.TLSClientConfig, d *schema.ResourceData) []map[string]interface{} {
+	c := map[string]interface{}{
+		"ca_data":     string(tcc.CAData),
+		"cert_data":   string(tcc.CertData),
+		"insecure":    tcc.Insecure,
+		"server_name": tcc.ServerName,
 	}
+
+	// ArgoCD API does not return sensitive data. Thus, we can't track
+	// the state of this attribute and load it from state instead.
+	// See https://github.com/argoproj/argo-cd/commit/60c62a944b155702e6d89cbef4c04ff0f525692f#diff-47255bee56d3ad7830d9721f65c73fac53009229cb98c63c67745527d598835bL473-L486
+	if kd, ok := d.GetOk("config.0.tls_client_config.0.key_data"); ok {
+		c["key_data"] = kd
+	}
+
+	if dd, ok := d.GetOk("config.0.tls_client_config.0.cert_data"); ok {
+		c["cert_data"] = dd
+	}
+
+	if cd, ok := d.GetOk("config.0.tls_client_config.0.ca_data"); ok {
+		c["ca_data"] = cd
+	}
+
+	if sn, ok := d.GetOk("config.0.tls_client_config.0.server_name"); ok {
+		c["server_name"] = sn
+	}
+
+	return []map[string]interface{}{c}
 }
 
-func flattenClusterConfigExecProviderConfig(epc *application.ExecProviderConfig) (
-	result []map[string]interface{}) {
-	if epc != nil {
-		result = []map[string]interface{}{
-			{
-				"api_version":  epc.APIVersion,
-				"args":         epc.Args,
-				"command":      epc.Command,
-				"env":          epc.Env,
-				"install_hint": epc.InstallHint,
-			},
-		}
+func flattenClusterConfigExecProviderConfig(d *schema.ResourceData) []map[string]interface{} {
+	// ArgoCD API does not return the execProvider block as it may contain
+	// sensitive data. Thus, we can't track the state of it
+	// and load it from state instead.
+	// See https://github.com/argoproj/argo-cd/commit/60c62a944b155702e6d89cbef4c04ff0f525692f#diff-47255bee56d3ad7830d9721f65c73fac53009229cb98c63c67745527d598835bL473-L486
+	c := map[string]interface{}{}
+	if args, ok := d.GetOk("config.0.exec_provider_config.0.args"); ok {
+		c["args"] = args
 	}
-	return
+	if env, ok := d.GetOk("config.0.exec_provider_config.0.env"); ok {
+		c["env"] = env
+	}
+	if command, ok := d.GetOk("config.0.exec_provider_config.0.command"); ok {
+		c["command"] = command
+	}
+	if apiVersion, ok := d.GetOk("config.0.exec_provider_config.0.api_version"); ok {
+		c["api_version"] = apiVersion
+	}
+	if installHint, ok := d.GetOk("config.0.exec_provider_config.0.install_hint"); ok {
+		c["install_hint"] = installHint
+	}
+
+	if len(c) == 0 {
+		return nil
+	}
+	return []map[string]interface{}{c}
 }
 
 func flattenClusterMetadata(annotations, labels map[string]string) []map[string]interface{} {

@@ -2,13 +2,14 @@ package argocd
 
 import (
 	"fmt"
+
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
 func metadataSchema(name string) *schema.Schema {
 	return &schema.Schema{
 		Type:        schema.TypeList,
-		Description: fmt.Sprintf("Standard %s's metadata. More info: https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#metadata", name),
+		Description: "Standard Kubernetes object metadata. For more info see the [Kubernetes reference](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#metadata).",
 		Required:    true,
 		MaxItems:    1,
 		Elem: &schema.Resource{
@@ -36,7 +37,7 @@ func metadataFields(objectName string) map[string]*schema.Schema {
 			Description:  fmt.Sprintf("Map of string keys and values that can be used to organize and categorize (scope and select) the %s. May match selectors of replication controllers and services. More info: http://kubernetes.io/docs/user-guide/labels", objectName),
 			Optional:     true,
 			Elem:         &schema.Schema{Type: schema.TypeString},
-			ValidateFunc: validateMetadataLabels,
+			ValidateFunc: validateMetadataLabels(false),
 		},
 		"name": {
 			Type:         schema.TypeString,

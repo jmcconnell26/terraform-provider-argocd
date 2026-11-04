@@ -1,0 +1,304 @@
+package provider
+
+import (
+	"strconv"
+
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+)
+
+type repositoryModel struct {
+	ID                         types.String `tfsdk:"id"`
+	Repo                       types.String `tfsdk:"repo"`
+	Name                       types.String `tfsdk:"name"`
+	Type                       types.String `tfsdk:"type"`
+	Project                    types.String `tfsdk:"project"`
+	UseAzureWorkloadIdentity   types.Bool   `tfsdk:"use_azure_workload_identity"`
+	Username                   types.String `tfsdk:"username"`
+	Password                   types.String `tfsdk:"password"`
+	SSHPrivateKey              types.String `tfsdk:"ssh_private_key"`
+	TLSClientCertData          types.String `tfsdk:"tls_client_cert_data"`
+	TLSClientCertKey           types.String `tfsdk:"tls_client_cert_key"`
+	EnableLFS                  types.Bool   `tfsdk:"enable_lfs"`
+	EnableOCI                  types.Bool   `tfsdk:"enable_oci"`
+	Insecure                   types.Bool   `tfsdk:"insecure"`
+	InheritedCreds             types.Bool   `tfsdk:"inherited_creds"`
+	ConnectionStateStatus      types.String `tfsdk:"connection_state_status"`
+	GitHubAppID                types.String `tfsdk:"githubapp_id"`
+	GitHubAppInstallationID    types.String `tfsdk:"githubapp_installation_id"`
+	GitHubAppEnterpriseBaseURL types.String `tfsdk:"githubapp_enterprise_base_url"`
+	GitHubAppPrivateKey        types.String `tfsdk:"githubapp_private_key"`
+	BearerToken                types.String `tfsdk:"bearer_token"`
+	Proxy                      types.String `tfsdk:"proxy"`
+	NoProxy                    types.String `tfsdk:"no_proxy"`
+	Depth                      types.Int64  `tfsdk:"depth"`
+}
+
+func repositorySchemaAttributes() map[string]schema.Attribute {
+	return map[string]schema.Attribute{
+		"id": schema.StringAttribute{
+			MarkdownDescription: "Repository identifier",
+			Computed:            true,
+		},
+		"repo": schema.StringAttribute{
+			MarkdownDescription: "URL of the repository.",
+			Required:            true,
+			PlanModifiers: []planmodifier.String{
+				stringplanmodifier.RequiresReplace(),
+			},
+		},
+		"name": schema.StringAttribute{
+			MarkdownDescription: "Name to be used for this repo. Only used with Helm repos.",
+			Optional:            true,
+		},
+		"type": schema.StringAttribute{
+			MarkdownDescription: "Type of the repo. Can be either `git`, `helm` or `oci`. `git` is assumed if empty or absent.",
+			Optional:            true,
+			Computed:            true,
+			Default:             stringdefault.StaticString("git"),
+			Validators: []validator.String{
+				stringvalidator.OneOf("git", "helm", "oci"),
+			},
+		},
+		"project": schema.StringAttribute{
+			MarkdownDescription: "The project name, in case the repository is project scoped.",
+			Optional:            true,
+			PlanModifiers: []planmodifier.String{
+				stringplanmodifier.RequiresReplace(),
+			},
+		},
+		"use_azure_workload_identity": schema.BoolAttribute{
+			MarkdownDescription: "Whether `Azure-Workload-identity` should be enabled for this repository.",
+			Optional:            true,
+			Computed:            true,
+			Default:             booldefault.StaticBool(false),
+		},
+		"username": schema.StringAttribute{
+			MarkdownDescription: "Username used for authenticating at the remote repository.",
+			Optional:            true,
+		},
+		"password": schema.StringAttribute{
+			MarkdownDescription: "Password or PAT used for authenticating at the remote repository.",
+			Optional:            true,
+			Sensitive:           true,
+		},
+		"bearer_token": schema.StringAttribute{
+			MarkdownDescription: "BearerToken contains the bearer token used for Git BitBucket Data Center auth at the repo server",
+			Optional:            true,
+			Sensitive:           true,
+		},
+		"ssh_private_key": schema.StringAttribute{
+			MarkdownDescription: "PEM data for authenticating at the repo server. Only used with Git repos.",
+			Optional:            true,
+			Sensitive:           true,
+		},
+		"tls_client_cert_data": schema.StringAttribute{
+			MarkdownDescription: "TLS client certificate in PEM format for authenticating at the repo server.",
+			Optional:            true,
+		},
+		"tls_client_cert_key": schema.StringAttribute{
+			MarkdownDescription: "TLS client certificate private key in PEM format for authenticating at the repo server.",
+			Optional:            true,
+			Sensitive:           true,
+		},
+		"enable_lfs": schema.BoolAttribute{
+			MarkdownDescription: "Whether `git-lfs` support should be enabled for this repository.",
+			Optional:            true,
+			Computed:            true,
+			Default:             booldefault.StaticBool(false),
+		},
+		"enable_oci": schema.BoolAttribute{
+			MarkdownDescription: "Whether `helm-oci` support should be enabled for this repository.",
+			Optional:            true,
+			Computed:            true,
+			Default:             booldefault.StaticBool(false),
+		},
+		"insecure": schema.BoolAttribute{
+			MarkdownDescription: "Whether the connection to the repository ignores any errors when verifying TLS certificates or SSH host keys.",
+			Optional:            true,
+			Computed:            true,
+			Default:             booldefault.StaticBool(false),
+		},
+		"inherited_creds": schema.BoolAttribute{
+			MarkdownDescription: "Whether credentials were inherited from a credential set.",
+			Computed:            true,
+		},
+		"connection_state_status": schema.StringAttribute{
+			MarkdownDescription: "Contains information about the current state of connection to the repository server.",
+			Computed:            true,
+		},
+		"githubapp_id": schema.StringAttribute{
+			MarkdownDescription: "ID of the GitHub app used to access the repo.",
+			Optional:            true,
+			Computed:            true,
+		},
+		"githubapp_installation_id": schema.StringAttribute{
+			MarkdownDescription: "The installation ID of the GitHub App used to access the repo.",
+			Optional:            true,
+			Computed:            true,
+		},
+		"githubapp_enterprise_base_url": schema.StringAttribute{
+			MarkdownDescription: "GitHub API URL for GitHub app authentication.",
+			Optional:            true,
+			Computed:            true,
+		},
+		"githubapp_private_key": schema.StringAttribute{
+			MarkdownDescription: "Private key data (PEM) for authentication via GitHub app.",
+			Optional:            true,
+			Sensitive:           true,
+		},
+		"proxy": schema.StringAttribute{
+			MarkdownDescription: "HTTP/HTTPS proxy to access the repository.",
+			Optional:            true,
+		},
+		"no_proxy": schema.StringAttribute{
+			MarkdownDescription: "Comma-separated list of hostnames that should be excluded from proxying.",
+			Optional:            true,
+		},
+		"depth": schema.Int64Attribute{
+			MarkdownDescription: "Depth specifies the depth for [shallow clones](https://argo-cd.readthedocs.io/en/stable/operator-manual/high_availability/#shallow-clone). A value of `0` means a full clone (the default). Shallow clone depths (`> 0`) are only supported from ArgoCD 3.3.0 onwards.",
+			Optional:            true,
+			Computed:            true,
+			Default:             int64default.StaticInt64(0),
+			Validators: []validator.Int64{
+				int64validator.AtLeast(0),
+			},
+		},
+	}
+}
+
+func (m *repositoryModel) toAPIModel() (*v1alpha1.Repository, error) {
+	repo := &v1alpha1.Repository{
+		Repo:                       m.Repo.ValueString(),
+		Name:                       m.Name.ValueString(),
+		Type:                       m.Type.ValueString(),
+		Project:                    m.Project.ValueString(),
+		UseAzureWorkloadIdentity:   m.UseAzureWorkloadIdentity.ValueBool(),
+		Username:                   m.Username.ValueString(),
+		Password:                   m.Password.ValueString(),
+		BearerToken:                m.BearerToken.ValueString(),
+		SSHPrivateKey:              m.SSHPrivateKey.ValueString(),
+		TLSClientCertData:          m.TLSClientCertData.ValueString(),
+		TLSClientCertKey:           m.TLSClientCertKey.ValueString(),
+		EnableLFS:                  m.EnableLFS.ValueBool(),
+		EnableOCI:                  m.EnableOCI.ValueBool(),
+		Insecure:                   m.Insecure.ValueBool(),
+		InheritedCreds:             m.InheritedCreds.ValueBool(),
+		GitHubAppEnterpriseBaseURL: m.GitHubAppEnterpriseBaseURL.ValueString(),
+		GithubAppPrivateKey:        m.GitHubAppPrivateKey.ValueString(),
+		Proxy:                      m.Proxy.ValueString(),
+		NoProxy:                    m.NoProxy.ValueString(),
+		Depth:                      m.Depth.ValueInt64(),
+	}
+
+	// Handle GitHub App ID conversion
+	if !m.GitHubAppID.IsNull() && !m.GitHubAppID.IsUnknown() {
+		id, err := strconv.ParseInt(m.GitHubAppID.ValueString(), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+
+		repo.GithubAppId = id
+	}
+
+	// Handle GitHub App Installation ID conversion
+	if !m.GitHubAppInstallationID.IsNull() && !m.GitHubAppInstallationID.IsUnknown() {
+		id, err := strconv.ParseInt(m.GitHubAppInstallationID.ValueString(), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+
+		repo.GithubAppInstallationId = id
+	}
+
+	return repo, nil
+}
+
+func (m *repositoryModel) updateFromAPI(repo *v1alpha1.Repository) *repositoryModel {
+	// Generate ID using "|" separator for project-scoped repos
+	if repo.Project != "" {
+		m.ID = types.StringValue(repo.Repo + "|" + repo.Project)
+	} else {
+		m.ID = types.StringValue(repo.Repo)
+	}
+
+	m.Repo = types.StringValue(repo.Repo)
+	m.Type = types.StringValue(repo.Type)
+	m.UseAzureWorkloadIdentity = types.BoolValue(repo.UseAzureWorkloadIdentity)
+	m.EnableLFS = types.BoolValue(repo.EnableLFS)
+	m.EnableOCI = types.BoolValue(repo.EnableOCI)
+	m.Insecure = types.BoolValue(repo.Insecure)
+	m.InheritedCreds = types.BoolValue(repo.InheritedCreds)
+
+	if repo.Depth > 0 {
+		m.Depth = types.Int64Value(repo.Depth)
+	} else if m.Depth.IsUnknown() || m.Depth.IsNull() {
+		m.Depth = types.Int64Value(0)
+	}
+
+	if repo.Name != "" {
+		m.Name = types.StringValue(repo.Name)
+	}
+
+	// Handle connection state status
+	if repo.ConnectionState.Status != "" {
+		m.ConnectionStateStatus = types.StringValue(repo.ConnectionState.Status)
+	}
+
+	if repo.Project != "" {
+		m.Project = types.StringValue(repo.Project)
+	}
+
+	// Handle username based on inheritance
+	if !repo.InheritedCreds {
+		if repo.Username != "" {
+			m.Username = types.StringValue(repo.Username)
+		}
+	}
+
+	if repo.GitHubAppEnterpriseBaseURL != "" {
+		m.GitHubAppEnterpriseBaseURL = types.StringValue(repo.GitHubAppEnterpriseBaseURL)
+	} else if m.GitHubAppEnterpriseBaseURL.IsUnknown() {
+		// If unknown and API didn't return a value, set to null
+		m.GitHubAppEnterpriseBaseURL = types.StringNull()
+	}
+
+	if repo.GithubAppId > 0 {
+		m.GitHubAppID = types.StringValue(strconv.FormatInt(repo.GithubAppId, 10))
+	} else if m.GitHubAppID.IsUnknown() {
+		// If unknown and API didn't return a value, set to null
+		m.GitHubAppID = types.StringNull()
+	}
+
+	// Handle GitHub App Installation ID conversion
+	if repo.GithubAppInstallationId > 0 {
+		m.GitHubAppInstallationID = types.StringValue(strconv.FormatInt(repo.GithubAppInstallationId, 10))
+	} else if m.GitHubAppInstallationID.IsUnknown() {
+		// If unknown and API didn't return a value, set to null
+		m.GitHubAppInstallationID = types.StringNull()
+	}
+
+	// Handle proxy settings
+	if repo.Proxy != "" {
+		m.Proxy = types.StringValue(repo.Proxy)
+	} else if m.Proxy.IsUnknown() {
+		m.Proxy = types.StringNull()
+	}
+
+	if repo.NoProxy != "" {
+		m.NoProxy = types.StringValue(repo.NoProxy)
+	} else if m.NoProxy.IsUnknown() {
+		m.NoProxy = types.StringNull()
+	}
+
+	return m
+}

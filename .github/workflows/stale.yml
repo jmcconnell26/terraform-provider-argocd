@@ -1,15 +1,33 @@
-name: 'Close stale PRs'
+## Reference: https://github.com/actions/stale
+name: 'Close stale Issues/PRs'
 on:
   schedule:
     - cron: '30 12 * * *'
 
+permissions:
+  contents: read
+
 jobs:
   stale:
-    runs-on: ubuntu-latest
+    permissions:
+      issues: write  # for actions/stale to close stale issues
+      pull-requests: write  # for actions/stale to close stale PRs
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/stale@v3
+      - uses: actions/stale@1e223db275d687790206a7acac4d1a11bd6fe629 # v10.4.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          stale-pr-message: 'This pr is stale because it has been open 14 days with no activity. Remove stale label or comment or this will be closed in 10 days.'
-          days-before-pr-stale: 14
-          days-before-pr-close: 24
+          days-before-stale: 90
+          days-before-close: 20
+          # Issue settings
+          stale-issue-message: >
+            This issue has been automatically marked as stale because it has not had
+            recent activity. It will be closed if no further activity occurs. Thank you
+            for your contributions.
+          exempt-issue-labels: "on-hold,pinned,good first issue,help wanted"
+          # PR Settings
+          stale-pr-message: >
+            This pull request has been automatically marked as stale because it has not had
+            recent activity. It will be closed if no further activity occurs. Thank you
+            for your contributions.
+          exempt-pr-labels: "on-hold,pinned"

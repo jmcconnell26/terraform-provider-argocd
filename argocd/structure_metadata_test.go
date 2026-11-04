@@ -6,6 +6,8 @@ import (
 )
 
 func TestMetadataIsInternalKey(t *testing.T) {
+	t.Parallel()
+
 	testCases := []struct {
 		Key      string
 		Expected bool
@@ -17,13 +19,20 @@ func TestMetadataIsInternalKey(t *testing.T) {
 		{"any.kubernetes.io", true},
 		{"kubernetes.io", true},
 		{"notified.notifications.argoproj.io", true},
+		{"argocd.argoproj.io/refresh", true},
+		{"argocd.argoproj.io/hydrate", true},
+		{"argocd.argoproj.io/sync-wave", false},
+		{"argocd.argoproj.io/manifest-generate-paths", false},
 	}
 	for i, tc := range testCases {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
+			t.Parallel()
+
 			isInternal := metadataIsInternalKey(tc.Key)
 			if tc.Expected && isInternal != tc.Expected {
 				t.Fatalf("Expected %q to be internal", tc.Key)
 			}
+
 			if !tc.Expected && isInternal != tc.Expected {
 				t.Fatalf("Expected %q not to be internal", tc.Key)
 			}

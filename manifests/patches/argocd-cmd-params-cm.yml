@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cmd-params-cm
+data:
+  application.namespaces: mynamespace-*
+  applicationsetcontroller.enable.scm.providers: "true"
+  applicationsetcontroller.allowed.scm.providers: "https://github.com,https://gitlab.com,https://dev.azure.com/,https://gitea.com,https://git.example.com"
+  applicationsetcontroller.namespaces: "*"

@@ -1,13 +1,22 @@
 package argocd
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"regexp"
 	"runtime"
+	"strconv"
 	"testing"
+	"time"
 
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/acctest"
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/resource"
+	"github.com/argoproj-labs/terraform-provider-argocd/internal/provider"
+	"github.com/argoproj-labs/terraform-provider-argocd/internal/testhelpers"
+	"github.com/argoproj/argo-cd/v3/pkg/apiclient/cluster"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-testing/helper/acctest"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
@@ -31,10 +40,9 @@ func TestAccArgoCDCluster(t *testing.T) {
 						"shard",
 						"1",
 					),
-					resource.TestCheckResourceAttr(
+					resource.TestCheckResourceAttrSet(
 						"argocd_cluster.simple",
 						"info.0.server_version",
-						"1.23",
 					),
 					resource.TestCheckResourceAttr(
 						"argocd_cluster.simple",
@@ -44,17 +52,16 @@ func TestAccArgoCDCluster(t *testing.T) {
 					resource.TestCheckResourceAttr(
 						"argocd_cluster.simple",
 						"config.0.tls_client_config.0.insecure",
-						"true",
+						strconv.FormatBool(isInsecure()),
 					),
 				),
 			},
-			// TODO: not working on CI every time
-			// {
-			// 	ResourceName:            "argocd_cluster.simple",
-			// 	ImportState:             true,
-			// 	ImportStateVerify:       true,
-			// 	ImportStateVerifyIgnore: []string{"config.0.bearer_token", "config.0.tls_client_config"},
-			// },
+			{
+				ResourceName:            "argocd_cluster.simple",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"config.0.bearer_token", "info", "config.0.tls_client_config.0.key_data"},
+			},
 			{
 				Config: testAccArgoCDClusterTLSCertificate(t, acctest.RandString(10)),
 				Check: resource.ComposeTestCheckFunc(
@@ -63,10 +70,9 @@ func TestAccArgoCDCluster(t *testing.T) {
 						"info.0.connection_state.0.status",
 						"Successful",
 					),
-					resource.TestCheckResourceAttr(
+					resource.TestCheckResourceAttrSet(
 						"argocd_cluster.tls",
 						"info.0.server_version",
-						"1.23",
 					),
 					resource.TestCheckResourceAttr(
 						"argocd_cluster.tls",
@@ -81,7 +87,7 @@ func TestAccArgoCDCluster(t *testing.T) {
 
 func TestAccArgoCDCluster_projectScope(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckFeatureSupported(t, featureProjectScopedClusters) },
+		PreCheck:          func() { testAccPreCheck(t) },
 		ProviderFactories: testAccProviders,
 		Steps: []resource.TestStep{
 			{
@@ -95,7 +101,7 @@ func TestAccArgoCDCluster_projectScope(t *testing.T) {
 					resource.TestCheckResourceAttr(
 						"argocd_cluster.project_scope",
 						"config.0.tls_client_config.0.insecure",
-						"true",
+						strconv.FormatBool(isInsecure()),
 					),
 					resource.TestCheckResourceAttr(
 						"argocd_cluster.project_scope",
@@ -104,13 +110,12 @@ func TestAccArgoCDCluster_projectScope(t *testing.T) {
 					),
 				),
 			},
-			// TODO: not working on CI every time
-			// {
-			// 	ResourceName:            "argocd_cluster.project_scope",
-			// 	ImportState:             true,
-			// 	ImportStateVerify:       true,
-			// 	ImportStateVerifyIgnore: []string{"config.0.bearer_token", "config.0.tls_client_config"},
-			// },
+			{
+				ResourceName:            "argocd_cluster.project_scope",
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"config.0.bearer_token", "info", "config.0.tls_client_config.0.key_data"},
+			},
 		},
 	})
 }
@@ -119,7 +124,7 @@ func TestAccArgoCDCluster_optionalName(t *testing.T) {
 	name := acctest.RandString(10)
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckFeatureSupported(t, featureProjectScopedClusters) },
+		PreCheck:          func() { testAccPreCheck(t) },
 		ProviderFactories: testAccProviders,
 		Steps: []resource.TestStep{
 			{
@@ -133,7 +138,7 @@ func TestAccArgoCDCluster_optionalName(t *testing.T) {
 					resource.TestCheckResourceAttr(
 						"argocd_cluster.cluster_metadata",
 						"config.0.tls_client_config.0.insecure",
-						"true",
+						strconv.FormatBool(isInsecure()),
 					),
 					resource.TestCheckResourceAttr(
 						"argocd_cluster.cluster_metadata",
@@ -153,7 +158,7 @@ func TestAccArgoCDCluster_optionalName(t *testing.T) {
 					resource.TestCheckResourceAttr(
 						"argocd_cluster.cluster_metadata",
 						"config.0.tls_client_config.0.insecure",
-						"true",
+						strconv.FormatBool(isInsecure()),
 					),
 					resource.TestCheckResourceAttr(
 						"argocd_cluster.cluster_metadata",
@@ -173,7 +178,7 @@ func TestAccArgoCDCluster_optionalName(t *testing.T) {
 					resource.TestCheckResourceAttr(
 						"argocd_cluster.cluster_metadata",
 						"config.0.tls_client_config.0.insecure",
-						"true",
+						strconv.FormatBool(isInsecure()),
 					),
 					resource.TestCheckResourceAttr(
 						"argocd_cluster.cluster_metadata",
@@ -188,8 +193,9 @@ func TestAccArgoCDCluster_optionalName(t *testing.T) {
 
 func TestAccArgoCDCluster_metadata(t *testing.T) {
 	clusterName := acctest.RandString(10)
+
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckFeatureSupported(t, featureClusterMetadata) },
+		PreCheck:          func() { testAccPreCheck(t) },
 		ProviderFactories: testAccProviders,
 		Steps: []resource.TestStep{
 			{
@@ -197,7 +203,7 @@ func TestAccArgoCDCluster_metadata(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckNoResourceAttr(
 						"argocd_cluster.cluster_metadata",
-						"metadata",
+						"metadata.0",
 					),
 				),
 			},
@@ -205,7 +211,7 @@ func TestAccArgoCDCluster_metadata(t *testing.T) {
 				ResourceName:            "argocd_cluster.cluster_metadata",
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"config", "info"},
+				ImportStateVerifyIgnore: []string{"config.0.bearer_token", "info", "config.0.tls_client_config.0.key_data"},
 			},
 			{
 				Config: testAccArgoCDClusterMetadata_addLabels(clusterName),
@@ -225,7 +231,7 @@ func TestAccArgoCDCluster_metadata(t *testing.T) {
 				ResourceName:            "argocd_cluster.cluster_metadata",
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"config", "info"},
+				ImportStateVerifyIgnore: []string{"config.0.bearer_token", "info", "config.0.tls_client_config.0.key_data"},
 			},
 			{
 				Config: testAccArgoCDClusterMetadata_addAnnotations(clusterName),
@@ -246,14 +252,14 @@ func TestAccArgoCDCluster_metadata(t *testing.T) {
 				ResourceName:            "argocd_cluster.cluster_metadata",
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"config", "info"},
+				ImportStateVerifyIgnore: []string{"config.0.bearer_token", "info", "config.0.tls_client_config.0.key_data"},
 			},
 			{
 				Config: testAccArgoCDClusterMetadata_removeLabels(clusterName),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckNoResourceAttr(
 						"argocd_cluster.cluster_metadata",
-						"metadata.0.labels",
+						"metadata.0.labels.test",
 					),
 					resource.TestCheckResourceAttr(
 						"argocd_cluster.cluster_metadata",
@@ -266,69 +272,94 @@ func TestAccArgoCDCluster_metadata(t *testing.T) {
 				ResourceName:            "argocd_cluster.cluster_metadata",
 				ImportState:             true,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"config", "info"},
+				ImportStateVerifyIgnore: []string{"config.0.bearer_token", "info", "config.0.tls_client_config.0.key_data"},
 			},
 		},
 	})
 }
 
-func TestAccArgoCDCluster_uniqueByServerEvenWithDifferentNames(t *testing.T) {
-	name := acctest.RandString(10)
-
+func TestAccArgoCDCluster_invalidSameServer(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckFeatureSupported(t, featureProjectScopedClusters) },
+		PreCheck:          func() { testAccPreCheck(t) },
 		ProviderFactories: testAccProviders,
 		Steps: []resource.TestStep{
 			{
-				Config:      testAccArgoCDClusterTwiceWithSameServer(name, name+"d"),
+				Config:      testAccArgoCDClusterTwiceWithSameServer(),
 				ExpectError: regexp.MustCompile("cluster with server address .* already exists"),
-				Check: resource.ComposeTestCheckFunc(
-					resource.TestCheckResourceAttr(
-						"argocd_cluster.cluster_one",
-						"info.0.connection_state.0.status",
-						"Successful",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_cluster.cluster_one",
-						"config.0.tls_client_config.0.insecure",
-						"true",
-					),
-					resource.TestCheckResourceAttr(
-						"argocd_cluster.cluster_one",
-						"name",
-						name,
-					),
-				),
 			},
-		},
-	})
-}
-
-func TestAccArgoCDCluster_uniqueByServer(t *testing.T) {
-	name := acctest.RandString(10)
-
-	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckFeatureSupported(t, featureProjectScopedClusters) },
-		ProviderFactories: testAccProviders,
-		Steps: []resource.TestStep{
 			{
 				Config:      testAccArgoCDClusterTwiceWithSameServerNoNames(),
 				ExpectError: regexp.MustCompile("cluster with server address .* already exists"),
+			},
+			{
+				Config:      testAccArgoCDClusterTwiceWithSameLogicalServer(),
+				ExpectError: regexp.MustCompile("cluster with server address .* already exists"),
+			},
+		},
+	})
+}
+
+func TestAccArgoCDCluster_outsideDeletion(t *testing.T) {
+	clusterName := acctest.RandString(10)
+	resource.Test(t, resource.TestCase{
+		PreCheck:          func() { testAccPreCheck(t) },
+		ProviderFactories: testAccProviders,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccArgoCDClusterMetadata(clusterName),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(
-						"argocd_cluster.cluster_one",
+						"argocd_cluster.cluster_metadata",
 						"info.0.connection_state.0.status",
 						"Successful",
 					),
 					resource.TestCheckResourceAttr(
-						"argocd_cluster.cluster_one",
+						"argocd_cluster.cluster_metadata",
 						"config.0.tls_client_config.0.insecure",
-						"true",
+						strconv.FormatBool(isInsecure()),
 					),
 					resource.TestCheckResourceAttr(
-						"argocd_cluster.cluster_one",
+						"argocd_cluster.cluster_metadata",
 						"name",
-						name,
+						clusterName,
+					),
+				),
+			},
+			{
+				PreConfig: func() {
+					// delete cluster and validate refresh generates a plan
+					// (non-regression test for https://github.com/oboukili/terraform-provider-argocd/issues/266)
+					si, err := getServerInterface()
+					if err != nil {
+						t.Error(fmt.Errorf("failed to get server interface: %s", err.Error()))
+					}
+					ctx, cancel := context.WithTimeout(t.Context(), 120*time.Second)
+					defer cancel()
+					_, err = si.ClusterClient.Delete(ctx, &cluster.ClusterQuery{Name: clusterName})
+					if err != nil {
+						t.Error(fmt.Errorf("failed to delete cluster '%s': %s", clusterName, err.Error()))
+					}
+				},
+				RefreshState:       true,
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				Config: testAccArgoCDClusterMetadata(clusterName),
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"argocd_cluster.cluster_metadata",
+						"info.0.connection_state.0.status",
+						"Successful",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_cluster.cluster_metadata",
+						"config.0.tls_client_config.0.insecure",
+						strconv.FormatBool(isInsecure()),
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_cluster.cluster_metadata",
+						"name",
+						clusterName,
 					),
 				),
 			},
@@ -336,33 +367,51 @@ func TestAccArgoCDCluster_uniqueByServer(t *testing.T) {
 	})
 }
 
-func TestAccArgoCDCluster_uniqueByServerTrimmed(t *testing.T) {
-	name := acctest.RandString(10)
-
+func TestAccArgoCDCluster_urlUpdate(t *testing.T) {
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckFeatureSupported(t, featureProjectScopedClusters) },
+		PreCheck:          func() { testAccPreCheck(t) },
 		ProviderFactories: testAccProviders,
 		Steps: []resource.TestStep{
 			{
-				Config: testAccArgoCDClusterTwiceWithSameServerNoNamesTrimmed(
-					"https://kubernetes.default.svc.cluster.local",
-					"https://kubernetes.default.svc.cluster.local/"),
-				ExpectError: regexp.MustCompile("cluster with server address .* already exists"),
+				Config: testAccArgoCDClusterBearerToken_urlChange("https://kubernetes.default.svc.cluster.local"),
 				Check: resource.ComposeTestCheckFunc(
 					resource.TestCheckResourceAttr(
-						"argocd_cluster.cluster_one",
+						"argocd_cluster.check_url_change",
 						"info.0.connection_state.0.status",
 						"Successful",
 					),
-					resource.TestCheckResourceAttr(
-						"argocd_cluster.cluster_one",
-						"config.0.tls_client_config.0.insecure",
-						"true",
+					resource.TestCheckResourceAttrSet(
+						"argocd_cluster.check_url_change",
+						"info.0.server_version",
 					),
 					resource.TestCheckResourceAttr(
-						"argocd_cluster.cluster_one",
-						"name",
-						name,
+						"argocd_cluster.check_url_change",
+						"config.0.tls_client_config.0.insecure",
+						strconv.FormatBool(isInsecure()),
+					),
+				),
+			},
+			{
+				Config: testAccArgoCDClusterBearerToken_urlChange("https://kubernetes.default"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("argocd_cluster.check_url_change", plancheck.ResourceActionReplace),
+					},
+				},
+				Check: resource.ComposeTestCheckFunc(
+					resource.TestCheckResourceAttr(
+						"argocd_cluster.check_url_change",
+						"info.0.connection_state.0.status",
+						"Successful",
+					),
+					resource.TestCheckResourceAttrSet(
+						"argocd_cluster.check_url_change",
+						"info.0.server_version",
+					),
+					resource.TestCheckResourceAttr(
+						"argocd_cluster.check_url_change",
+						"config.0.tls_client_config.0.insecure",
+						strconv.FormatBool(isInsecure()),
 					),
 				),
 			},
@@ -374,7 +423,7 @@ func TestAccArgoCDCluster_namespacesErrorWhenEmpty(t *testing.T) {
 	name := acctest.RandString(10)
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:          func() { testAccPreCheck(t); testAccPreCheckFeatureSupported(t, featureProjectScopedClusters) },
+		PreCheck:          func() { testAccPreCheck(t) },
 		ProviderFactories: testAccProviders,
 		Steps: []resource.TestStep{
 			{
@@ -397,21 +446,23 @@ resource "argocd_cluster" "simple" {
   shard  = "1"
   namespaces = ["default", "foo"]
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-`, clusterName)
+`, clusterName, getConfig())
 }
 
 func testAccArgoCDClusterTLSCertificate(t *testing.T, clusterName string) string {
+	// Skip if we're not in an acceptance test environment
+	if os.Getenv("TF_ACC") == "" {
+		t.Skip("Acceptance tests skipped unless env 'TF_ACC' set")
+	}
+
 	rc, err := getInternalRestConfig()
 	if err != nil {
 		t.Error(err)
 	}
+
 	return fmt.Sprintf(`
 resource "argocd_cluster" "tls" {
   server = "https://kubernetes.default.svc.cluster.local"
@@ -443,14 +494,10 @@ resource "argocd_cluster" "project_scope" {
   name   = "%s"
   project = "%s"
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-`, clusterName, projectName)
+`, clusterName, projectName, getConfig())
 }
 
 func testAccArgoCDClusterMetadata(clusterName string) string {
@@ -459,108 +506,85 @@ resource "argocd_cluster" "cluster_metadata" {
   server = "https://kubernetes.default.svc.cluster.local"
   name   = "%s"
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-`, clusterName)
+`, clusterName, getConfig())
 }
 
 func testAccArgoCDClusterMetadataNoName() string {
-	return `
+	return fmt.Sprintf(`
 resource "argocd_cluster" "cluster_metadata" {
   server = "https://kubernetes.default.svc.cluster.local"
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-`
+`, getConfig())
 }
 
-func testAccArgoCDClusterTwiceWithSameServer(clusterName, clusterName2 string) string {
+func testAccArgoCDClusterTwiceWithSameServer() string {
 	return fmt.Sprintf(`
-resource "argocd_cluster" "cluster_one" {
+resource "argocd_cluster" "cluster_one_same_server" {
   server = "https://kubernetes.default.svc.cluster.local"
-  name   = "%s"
+  name   = "foo"
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-resource "argocd_cluster" "cluster_two" {
+resource "argocd_cluster" "cluster_two_same_server" {
   server = "https://kubernetes.default.svc.cluster.local"
-  name   = "%s"
+  name   = "bar"
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
-}
-`, clusterName, clusterName2)
+}`, getConfig(), getConfig())
 }
 
 func testAccArgoCDClusterTwiceWithSameServerNoNames() string {
-	return `
-resource "argocd_cluster" "cluster_one" {
+	return fmt.Sprintf(`
+resource "argocd_cluster" "cluster_one_no_name" {
   server = "https://kubernetes.default.svc.cluster.local"
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-resource "argocd_cluster" "cluster_two" {
+resource "argocd_cluster" "cluster_two_no_name" {
   server = "https://kubernetes.default.svc.cluster.local"
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-`
+`, getConfig(), getConfig())
 }
 
-func testAccArgoCDClusterTwiceWithSameServerNoNamesTrimmed(server, server2 string) string {
+func testAccArgoCDClusterTwiceWithSameLogicalServer() string {
 	return fmt.Sprintf(`
-resource "argocd_cluster" "cluster_one" {
+resource "argocd_cluster" "cluster_with_trailing_slash" {
   name = "server"
-  server = "%s"
+  server = "https://kubernetes.default.svc.cluster.local/"
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-resource "argocd_cluster" "cluster_two" {
+resource "argocd_cluster" "cluster_with_no_trailing_slash" {
   name = "server"
+  server = "https://kubernetes.default.svc.cluster.local"
+  config {
+%s
+  }
+}`, getConfig(), getConfig())
+}
+
+func testAccArgoCDClusterBearerToken_urlChange(url string) string {
+	return fmt.Sprintf(`
+resource "argocd_cluster" "check_url_change" {
   server = "%s"
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-`, server, server2)
+`, url, getConfig())
 }
 
 func testAccArgoCDClusterMetadata_addLabels(clusterName string) string {
@@ -574,14 +598,10 @@ resource "argocd_cluster" "cluster_metadata" {
     }
   }
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-`, clusterName)
+`, clusterName, getConfig())
 }
 
 func testAccArgoCDClusterMetadata_addAnnotations(clusterName string) string {
@@ -598,14 +618,10 @@ resource "argocd_cluster" "cluster_metadata" {
     }
   }
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-`, clusterName)
+`, clusterName, getConfig())
 }
 
 func testAccArgoCDClusterMetadata_removeLabels(clusterName string) string {
@@ -619,14 +635,10 @@ resource "argocd_cluster" "cluster_metadata" {
     }
   }
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-`, clusterName)
+`, clusterName, getConfig())
 }
 
 func testAccArgoCDClusterNamespacesContainsEmptyString(clusterName string) string {
@@ -637,14 +649,10 @@ resource "argocd_cluster" "simple" {
   shard  = "1"
   namespaces = [""]
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-`, clusterName)
+`, clusterName, getConfig())
 }
 
 func testAccArgoCDClusterNamespacesContainsEmptyString_MultipleItems(clusterName string) string {
@@ -655,19 +663,18 @@ resource "argocd_cluster" "simple" {
   shard  = "1"
   namespaces = ["default", ""]
   config {
-    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
-    bearer_token = "abcdef.0123456789abcdef"
-    tls_client_config {
-      insecure = true
-    }
+%s
   }
 }
-`, clusterName)
+`, clusterName, getConfig())
 }
 
 // getInternalRestConfig returns the internal Kubernetes cluster REST config.
 func getInternalRestConfig() (*rest.Config, error) {
-	rc := &rest.Config{}
+	if testhelpers.GlobalTestEnv != nil {
+		return testhelpers.GlobalTestEnv.RESTConfig, nil
+	}
+
 	var kubeConfigFilePath string
 
 	switch runtime.GOOS {
@@ -676,20 +683,80 @@ func getInternalRestConfig() (*rest.Config, error) {
 	default:
 		kubeConfigFilePath = fmt.Sprintf("%s/.kube/config", homedir.HomeDir())
 	}
+
 	cfg, err := clientcmd.LoadFromFile(kubeConfigFilePath)
 	if err != nil {
 		return nil, err
 	}
+
+	rc := &rest.Config{}
+
 	for key, cluster := range cfg.Clusters {
 		if key == "kind-argocd" {
 			authInfo := cfg.AuthInfos[key]
 			rc.Host = cluster.Server
 			rc.ServerName = cluster.TLSServerName
-			rc.TLSClientConfig.CAData = cluster.CertificateAuthorityData
-			rc.TLSClientConfig.CertData = authInfo.ClientCertificateData
-			rc.TLSClientConfig.KeyData = authInfo.ClientKeyData
+			rc.CAData = cluster.CertificateAuthorityData
+			rc.CertData = authInfo.ClientCertificateData
+			rc.KeyData = authInfo.ClientKeyData
+
 			return rc, nil
 		}
 	}
+
 	return nil, fmt.Errorf("could not find a kind-argocd cluster from the current ~/.kube/config file")
+}
+
+// build & init ArgoCD server interface
+func getServerInterface() (*provider.ServerInterface, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	insecure, err := strconv.ParseBool(os.Getenv("ARGOCD_INSECURE"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse 'ARGOCD_INSECURE' env var to bool: %s", err.Error())
+	}
+
+	si := provider.NewServerInterface(provider.ArgoCDProviderConfig{
+		ServerAddr: types.StringValue(os.Getenv("ARGOCD_SERVER")),
+		Insecure:   types.BoolValue(insecure),
+		Username:   types.StringValue(os.Getenv("ARGOCD_AUTH_USERNAME")),
+		Password:   types.StringValue(os.Getenv("ARGOCD_AUTH_PASSWORD")),
+	})
+
+	diag := si.InitClients(ctx)
+	if diag.HasError() {
+		return nil, fmt.Errorf("failed to init clients: %v", diag.Errors())
+	}
+
+	return si, nil
+}
+
+func getConfig() string {
+	if testhelpers.GlobalTestEnv != nil {
+		r := testhelpers.GlobalTestEnv.RESTConfig
+
+		return fmt.Sprintf(`
+    tls_client_config {
+      insecure = false
+      ca_data = <<CA_DATA
+%sCA_DATA
+      cert_data = <<CERT_DATA
+%sCERT_DATA
+      key_data = <<KEY_DATA
+%sKEY_DATA
+    }`, string(r.CAData), string(r.CertData), string(r.KeyData))
+	}
+
+	return `
+    # Uses Kind's bootstrap token whose ttl is 24 hours after cluster bootstrap.
+    bearer_token = "abcdef.0123456789abcdef"
+    tls_client_config {
+      insecure = true
+    }
+`
+}
+
+func isInsecure() bool {
+	return testhelpers.GlobalTestEnv == nil
 }
