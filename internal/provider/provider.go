@@ -94,13 +94,26 @@ func (p *ArgoCDProvider) Schema(ctx context.Context, req provider.SchemaRequest,
 				Description: "Additional root CA certificates file to add to the client TLS connection pool.",
 				Optional:    true,
 			},
+			"cert": schema.StringAttribute{
+				Description: "Additional root CA certificates (PEM) to add to the client TLS connection pool. Ignored when `cert_file` is set.",
+				Optional:    true,
+			},
 			"client_cert_file": schema.StringAttribute{
-				Description: "Client certificate.",
+				Description: "Client certificate file.",
+				Optional:    true,
+			},
+			"client_cert": schema.StringAttribute{
+				Description: "Client certificate (PEM). Ignored when `client_cert_file` is set.",
+				Optional:    true,
+			},
+			"client_cert_key_file": schema.StringAttribute{
+				Description: "Client certificate key file.",
 				Optional:    true,
 			},
 			"client_cert_key": schema.StringAttribute{
-				Description: "Client certificate key.",
+				Description: "Client certificate key (PEM). Ignored when `client_cert_key_file` is set.",
 				Optional:    true,
+				Sensitive:   true,
 			},
 			"grpc_web": schema.BoolAttribute{
 				Description: "Whether to use gRPC web proxy client. Useful if Argo CD server is behind proxy which does not support HTTP2.",

@@ -86,9 +86,12 @@ provider "argocd" {
 ### Optional
 
 - `auth_token` (String, Sensitive) ArgoCD authentication token, takes precedence over `username`/`password`. Can be set through the `ARGOCD_AUTH_TOKEN` environment variable.
+- `cert` (String) Additional root CA certificates (PEM) to add to the client TLS connection pool. Ignored when `cert_file` is set.
 - `cert_file` (String) Additional root CA certificates file to add to the client TLS connection pool.
-- `client_cert_file` (String) Client certificate.
-- `client_cert_key` (String) Client certificate key.
+- `client_cert` (String) Client certificate (PEM). Ignored when `client_cert_file` is set.
+- `client_cert_file` (String) Client certificate file.
+- `client_cert_key` (String, Sensitive) Client certificate key (PEM). Ignored when `client_cert_key_file` is set.
+- `client_cert_key_file` (String) Client certificate key file.
 - `config_path` (String) Override the default config path of `$HOME/.config/argocd/config`. Only relevant when `use_local_config`. Can be set through the `ARGOCD_CONFIG_PATH` environment variable.
 - `context` (String) Context to choose when using a local ArgoCD config file. Only relevant when `use_local_config`. Can be set through `ARGOCD_CONTEXT` environment variable.
 - `core` (Boolean) Configure direct access using Kubernetes API server.

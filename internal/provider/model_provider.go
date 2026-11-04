@@ -43,15 +43,18 @@ type ArgoCDProviderConfig struct {
 	Context        types.String `tfsdk:"context"`
 
 	// Other configuration
-	CertFile        types.String `tfsdk:"cert_file"`
-	ClientCertFile  types.String `tfsdk:"client_cert_file"`
-	ClientCertKey   types.String `tfsdk:"client_cert_key"`
-	GRPCWeb         types.Bool   `tfsdk:"grpc_web"`
-	GRPCWebRootPath types.String `tfsdk:"grpc_web_root_path"`
-	Headers         types.Set    `tfsdk:"headers"`
-	Insecure        types.Bool   `tfsdk:"insecure"`
-	PlainText       types.Bool   `tfsdk:"plain_text"`
-	UserAgent       types.String `tfsdk:"user_agent"`
+	CertFile          types.String `tfsdk:"cert_file"`
+	Cert              types.String `tfsdk:"cert"`
+	ClientCertFile    types.String `tfsdk:"client_cert_file"`
+	ClientCert        types.String `tfsdk:"client_cert"`
+	ClientCertKeyFile types.String `tfsdk:"client_cert_key_file"`
+	ClientCertKey     types.String `tfsdk:"client_cert_key"`
+	GRPCWeb           types.Bool   `tfsdk:"grpc_web"`
+	GRPCWebRootPath   types.String `tfsdk:"grpc_web_root_path"`
+	Headers           types.Set    `tfsdk:"headers"`
+	Insecure          types.Bool   `tfsdk:"insecure"`
+	PlainText         types.Bool   `tfsdk:"plain_text"`
+	UserAgent         types.String `tfsdk:"user_agent"`
 }
 
 func (p ArgoCDProviderConfig) getApiClientOptions(ctx context.Context) (*apiclient.ClientOptions, diag.Diagnostics) {
@@ -59,9 +62,6 @@ func (p ArgoCDProviderConfig) getApiClientOptions(ctx context.Context) (*apiclie
 
 	opts := &apiclient.ClientOptions{
 		AuthToken:            getDefaultString(p.AuthToken, "ARGOCD_AUTH_TOKEN"),
-		CertFile:             p.CertFile.ValueString(),
-		ClientCertFile:       p.ClientCertFile.ValueString(),
-		ClientCertKeyFile:    p.ClientCertKey.ValueString(),
 		GRPCWeb:              p.GRPCWeb.ValueBool(),
 		GRPCWebRootPath:      p.GRPCWebRootPath.ValueString(),
 		Insecure:             getDefaultBool(ctx, p.Insecure, "ARGOCD_INSECURE"),
@@ -71,6 +71,8 @@ func (p ArgoCDProviderConfig) getApiClientOptions(ctx context.Context) (*apiclie
 		ServerAddr:           getDefaultString(p.ServerAddr, "ARGOCD_SERVER"),
 		UserAgent:            p.Username.ValueString(),
 	}
+
+	diags.Append(p.setCertificateOpts(opts)...)
 
 	if !p.Headers.IsNull() {
 		var h []string

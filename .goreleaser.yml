@@ -39,7 +39,7 @@ release:
   draft: false
   disable: false
   github:
-    owner: argoproj-labs
+    owner: jmcconnell26
     name: terraform-provider-argocd
 changelog:
   use: github-native
